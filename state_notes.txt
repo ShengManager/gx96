@@ -1,0 +1,17 @@
+Current state after restart:
+- Server running, 0 TS errors, 0 runtime errors
+- Player frontend visible: Home page with Games/Bonus/History/Profile cards, bottom navbar
+- Shows "Login to view games" when not logged in
+- Admin panel at /admin/login
+- New features added: Frontend Settings, Domain ACL, Timezone management in AdminSettings
+- New DB tables: frontend_settings, domain_acl (migration applied)
+- WebSocket bridge: deposit/withdraw notifications now push to both WS and Telegram
+- Anomalous credit detection added to adminPlayers router
+
+Remaining TODO items to check:
+- Anomalous credit detection UI
+- Frontend settings backend support (done)
+- Timezone display management (done)
+- Domain ACL (done)
+- Loading/error states enhancement
+- More comprehensive tests

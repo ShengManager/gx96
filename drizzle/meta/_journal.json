@@ -1,0 +1,41 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1776062096877,
+      "tag": "0000_salty_lake",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1776062463126,
+      "tag": "0001_minor_sage",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1776068290445,
+      "tag": "0002_worthless_sister_grimm",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1776083037126,
+      "tag": "0003_dazzling_sentinel",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1776083122533,
+      "tag": "0004_late_the_enforcers",
+      "breakpoints": true
+    }
+  ]
+}

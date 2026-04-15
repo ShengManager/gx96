@@ -1,0 +1,18 @@
+Current State - Apr 13 2026:
+- Server running with 0 TS errors
+- Frontend rendering: Player Home page with dark theme, bottom navbar, quick access cards (Games, Bonus, History, Profile)
+- "Login to view games" shown when not authenticated
+- Top header: TgGaming logo + Login link
+- Bottom navbar: Home, Bonus, Deposit, Withdraw, Profile
+
+Gap fixes completed:
+1. Telegram webhook handler - real processUpdate dispatch
+2. Auto-login token generation (generateAutoLoginToken / verifyAutoLoginToken)
+3. Auto-login endpoint /api/player/auto-login
+4. PlayerLogin.tsx rewritten with auto-login token support + useEffect redirect fix
+5. TG Bot main menu now includes "Open Web App" button with auto-login link
+
+Still need:
+- Write/update vitest tests for new auth functions
+- Verify admin login page works
+- Save checkpoint and deliver
