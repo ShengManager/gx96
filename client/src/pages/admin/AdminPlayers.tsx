@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
-import { Search, Eye, UserCheck, UserX, Tag, Star, ChevronLeft, ChevronRight, AlertTriangle, RefreshCw, Loader2, Phone, Globe, Wallet, Calendar, Copy, Shield } from "lucide-react";
+import { Search, Eye, UserCheck, UserX, Tag, Star, ChevronLeft, ChevronRight, AlertTriangle, RefreshCw, Loader2, Phone, Globe, Wallet, Calendar, Copy, Shield, LogIn } from "lucide-react";
 import { toast } from "sonner";
 
 export default function AdminPlayers() {
@@ -39,6 +39,10 @@ export default function AdminPlayers() {
     onError: (err: any) => toast.error(err.message),
   });
 
+  const loginAsPlayerMutation = trpc.adminPlayers.loginAsPlayer.useMutation({
+    onError: (err: any) => toast.error(err.message || "Failed to open frontend login"),
+  });
+
   const [showAnomalies, setShowAnomalies] = useState(false);
   const [scanEnabled, setScanEnabled] = useState(false);
 
@@ -53,6 +57,19 @@ export default function AdminPlayers() {
   const openPlayerDetail = (playerId: number) => {
     setSelectedPlayer(playerId);
     setDetailOpen(true);
+  };
+
+  const handleFrontendLogin = async (playerId: number) => {
+    try {
+      const res = await loginAsPlayerMutation.mutateAsync({ token: accessToken!, playerId });
+      if (res?.loginUrl) {
+        window.open(res.loginUrl, "_blank", "noopener,noreferrer");
+      } else {
+        toast.error("No frontend login URL returned");
+      }
+    } catch {
+      // handled in mutation onError
+    }
   };
 
   return (
@@ -197,6 +214,15 @@ export default function AdminPlayers() {
                     <div className="flex items-center justify-end gap-1">
                       <Button variant="ghost" size="icon" onClick={() => openPlayerDetail(player.id)}>
                         <Eye className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        title="Login to frontend as this player"
+                        onClick={() => handleFrontendLogin(player.id)}
+                        disabled={loginAsPlayerMutation.isPending}
+                      >
+                        <LogIn className="w-4 h-4 text-primary" />
                       </Button>
                       {hasPermission("player", "edit") && (
                         <Button

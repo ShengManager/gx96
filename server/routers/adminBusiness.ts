@@ -13,6 +13,30 @@ import { startOfDayInTimezone, endOfDayInTimezone } from "../services/timezone";
 import { startBot, stopBot, restartBot, activeBots, getBotStatus, getAllBotStatuses } from "../services/telegramBot";
 import { getMiddlewaveConfig, getGameList, getProjectInfo, getActiveProviders } from "../services/middlewave";
 
+const CURRENCY_TIMEZONE_MAP: Record<string, string> = {
+  MYR: "Asia/Kuala_Lumpur",
+  SGD: "Asia/Singapore",
+  THB: "Asia/Bangkok",
+  AUD: "Australia/Sydney",
+  USD: "America/New_York",
+};
+
+const COUNTRY_TIMEZONE_MAP: Record<string, string> = {
+  MY: "Asia/Kuala_Lumpur",
+  SG: "Asia/Singapore",
+  TH: "Asia/Bangkok",
+  AU: "Australia/Sydney",
+  US: "America/New_York",
+};
+
+function inferTimezoneFromCountryCurrency(countryCode?: string, currency?: string): string {
+  const c = (currency || "").toUpperCase();
+  const cc = (countryCode || "").toUpperCase();
+  if (CURRENCY_TIMEZONE_MAP[c]) return CURRENCY_TIMEZONE_MAP[c];
+  if (COUNTRY_TIMEZONE_MAP[cc]) return COUNTRY_TIMEZONE_MAP[cc];
+  return "UTC";
+}
+
 export const adminBonusRouter = router({
   list: publicProcedure
     .input(z.object({ token: z.string() }))
@@ -239,6 +263,9 @@ export const adminSettingsRouter = router({
           await database.insert(countryConfigs).values(
             input.countries.map(c => ({ adminId: admin.adminId!, ...c }))
           );
+          const preferred = input.countries.find(c => c.isAllowed) || input.countries[0];
+          const inferredTimezone = inferTimezoneFromCountryCurrency(preferred.countryCode, preferred.currency);
+          await db.setSetting(admin.adminId!, "timezone", inferredTimezone);
         }
         return { success: true };
       }),

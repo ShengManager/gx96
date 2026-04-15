@@ -12,6 +12,30 @@ type TopAdminTokenPayload = {
   username: string;
 };
 
+const CURRENCY_TIMEZONE_MAP: Record<string, string> = {
+  MYR: "Asia/Kuala_Lumpur",
+  SGD: "Asia/Singapore",
+  THB: "Asia/Bangkok",
+  AUD: "Australia/Sydney",
+  USD: "America/New_York",
+};
+
+const COUNTRY_TIMEZONE_MAP: Record<string, string> = {
+  MY: "Asia/Kuala_Lumpur",
+  SG: "Asia/Singapore",
+  TH: "Asia/Bangkok",
+  AU: "Australia/Sydney",
+  US: "America/New_York",
+};
+
+function inferTimezone(currency?: string, countryCode?: string, fallback?: string) {
+  const c = (currency || "").toUpperCase();
+  const cc = (countryCode || "").toUpperCase();
+  if (CURRENCY_TIMEZONE_MAP[c]) return CURRENCY_TIMEZONE_MAP[c];
+  if (COUNTRY_TIMEZONE_MAP[cc]) return COUNTRY_TIMEZONE_MAP[cc];
+  return fallback || "UTC";
+}
+
 function getTopAdminCredentials() {
   const username = process.env.TOPADMIN_USERNAME;
   const password = process.env.TOPADMIN_PASSWORD;
@@ -103,11 +127,12 @@ export const topAdminRouter = router({
       currency: z.string().min(1).max(10),
       countryCode: z.string().min(1).max(10),
       phonePrefix: z.string().min(1).max(10),
-      timezone: z.string().min(1).max(16),
+      timezone: z.string().min(1).max(64).optional(),
       defaultLanguage: z.string().min(1).max(10).default("zh"),
     }))
     .mutation(async ({ input }) => {
       verifyTopAdminToken(input.token);
+      const resolvedTimezone = inferTimezone(input.currency, input.countryCode, input.timezone);
       try {
         const db = await getDb();
         if (!db) {
@@ -147,8 +172,8 @@ export const topAdminRouter = router({
 
           await tx.insert(systemSettings).values({ adminId, settingKey: "site_name", settingValue: input.siteName })
             .onDuplicateKeyUpdate({ set: { settingValue: input.siteName } });
-          await tx.insert(systemSettings).values({ adminId, settingKey: "timezone", settingValue: input.timezone })
-            .onDuplicateKeyUpdate({ set: { settingValue: input.timezone } });
+          await tx.insert(systemSettings).values({ adminId, settingKey: "timezone", settingValue: resolvedTimezone })
+            .onDuplicateKeyUpdate({ set: { settingValue: resolvedTimezone } });
           await tx.insert(systemSettings).values({ adminId, settingKey: "default_language", settingValue: input.defaultLanguage })
             .onDuplicateKeyUpdate({ set: { settingValue: input.defaultLanguage } });
           await tx.insert(systemSettings).values({ adminId, settingKey: "default_currency", settingValue: input.currency.toUpperCase() })

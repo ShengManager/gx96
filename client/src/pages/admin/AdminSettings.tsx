@@ -18,20 +18,45 @@ import { toast } from "sonner";
 const MODULES = ["dashboard", "player", "deposit", "withdraw", "bonus", "bank", "setting", "telegram", "report", "banner", "subaccount", "log"];
 
 const TIMEZONE_OPTIONS = [
-  { value: "-12", label: "UTC-12:00" }, { value: "-11", label: "UTC-11:00" },
-  { value: "-10", label: "UTC-10:00 (Hawaii)" }, { value: "-9", label: "UTC-09:00 (Alaska)" },
-  { value: "-8", label: "UTC-08:00 (Pacific)" }, { value: "-7", label: "UTC-07:00 (Mountain)" },
-  { value: "-6", label: "UTC-06:00 (Central)" }, { value: "-5", label: "UTC-05:00 (Eastern)" },
-  { value: "-4", label: "UTC-04:00 (Atlantic)" }, { value: "-3", label: "UTC-03:00 (Brazil)" },
-  { value: "-2", label: "UTC-02:00" }, { value: "-1", label: "UTC-01:00" },
-  { value: "0", label: "UTC+00:00 (London)" }, { value: "1", label: "UTC+01:00 (Paris)" },
-  { value: "2", label: "UTC+02:00 (Cairo)" }, { value: "3", label: "UTC+03:00 (Moscow)" },
-  { value: "4", label: "UTC+04:00 (Dubai)" }, { value: "5", label: "UTC+05:00 (Pakistan)" },
-  { value: "5.5", label: "UTC+05:30 (India)" }, { value: "6", label: "UTC+06:00 (Bangladesh)" },
-  { value: "7", label: "UTC+07:00 (Bangkok)" }, { value: "8", label: "UTC+08:00 (Singapore/MY)" },
-  { value: "9", label: "UTC+09:00 (Tokyo)" }, { value: "10", label: "UTC+10:00 (Sydney)" },
-  { value: "11", label: "UTC+11:00" }, { value: "12", label: "UTC+12:00 (Auckland)" },
+  { value: "UTC", city: "UTC" },
+  { value: "Asia/Kuala_Lumpur", city: "Kuala Lumpur" },
+  { value: "Asia/Singapore", city: "Singapore" },
+  { value: "Asia/Bangkok", city: "Bangkok" },
+  { value: "Asia/Tokyo", city: "Tokyo" },
+  { value: "Australia/Sydney", city: "Sydney (DST auto)" },
+  { value: "America/New_York", city: "New York (DST auto)" },
+  { value: "America/Los_Angeles", city: "Los Angeles (DST auto)" },
+  { value: "Europe/London", city: "London (DST auto)" },
 ];
+
+function getTimezoneOffsetLabel(timezone: string): string {
+  try {
+    const now = new Date();
+    const dtf = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      hour12: false,
+      timeZoneName: "shortOffset",
+    });
+    const parts = dtf.formatToParts(now);
+    const tzName = parts.find((p) => p.type === "timeZoneName")?.value || "UTC";
+    return tzName.replace("GMT", "UTC");
+  } catch {
+    return "UTC";
+  }
+}
+
+function normalizeLegacyTimezone(value: string | undefined): string {
+  if (!value) return "Asia/Kuala_Lumpur";
+  if (value.includes("/")) return value;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "Asia/Kuala_Lumpur";
+  if (n >= 10) return "Australia/Sydney";
+  if (n >= 8) return "Asia/Kuala_Lumpur";
+  if (n >= 7) return "Asia/Bangkok";
+  if (n <= -4) return "America/New_York";
+  if (n <= -7) return "America/Los_Angeles";
+  return "UTC";
+}
 
 export default function AdminSettings() {
   const { accessToken, user, hasPermission } = useAdminAuth();
@@ -85,6 +110,7 @@ function SystemSettings({ accessToken, canEdit }: { accessToken: string; canEdit
     if (settingsQuery.data) {
       const obj: Record<string, string> = {};
       (settingsQuery.data as any[]).forEach((s: any) => { obj[s.settingKey] = s.settingValue || ""; });
+      obj["timezone"] = normalizeLegacyTimezone(obj["timezone"]);
       setForm(obj);
     }
   }, [settingsQuery.data]);
@@ -115,11 +141,13 @@ function SystemSettings({ accessToken, canEdit }: { accessToken: string; canEdit
         {/* Timezone selector */}
         <div className="grid grid-cols-3 gap-4 items-center">
           <Label className="text-right text-sm flex items-center justify-end gap-1"><Clock className="w-4 h-4" /> Display Timezone</Label>
-          <Select value={form["timezone"] || "8"} onValueChange={v => setForm(f => ({ ...f, timezone: v }))} disabled={!canEdit}>
+          <Select value={form["timezone"] || "Asia/Kuala_Lumpur"} onValueChange={v => setForm(f => ({ ...f, timezone: v }))} disabled={!canEdit}>
             <SelectTrigger className="col-span-2"><SelectValue placeholder="Select timezone" /></SelectTrigger>
             <SelectContent>
               {TIMEZONE_OPTIONS.map(tz => (
-                <SelectItem key={tz.value} value={tz.value}>{tz.label}</SelectItem>
+                <SelectItem key={tz.value} value={tz.value}>
+                  {getTimezoneOffsetLabel(tz.value)} ({tz.city})
+                </SelectItem>
               ))}
             </SelectContent>
           </Select>

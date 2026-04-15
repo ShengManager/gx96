@@ -9,6 +9,22 @@ import {
   Loader2, Trophy, Zap, Sparkles,
 } from "lucide-react";
 
+function getGameCode(game: any): string {
+  return game?.gameCode || game?.GameCode || "";
+}
+
+function getGameName(game: any): string {
+  return game?.gameName || game?.GameName || "Unknown Game";
+}
+
+function getGameType(game: any): string {
+  return game?.gameType || game?.GameType || "Other";
+}
+
+function getGameImage(game: any): string {
+  return game?.imageUrl || game?.ImageUrl || "";
+}
+
 export default function PlayerHome() {
   const { isAuthenticated, user, accessToken } = usePlayerAuth();
 
@@ -27,7 +43,7 @@ export default function PlayerHome() {
   // Group games by type
   const gamesByType: Record<string, any[]> = {};
   games.forEach((g: any) => {
-    const t = g.GameType || "Other";
+    const t = getGameType(g);
     if (!gamesByType[t]) gamesByType[t] = [];
     gamesByType[t].push(g);
   });
@@ -108,7 +124,7 @@ export default function PlayerHome() {
         ) : games.length > 0 ? (
           <div className="grid grid-cols-3 gap-2.5">
             {games.slice(0, 9).map((game: any) => (
-              <GameCard key={game.GameCode} game={game} />
+              <GameCard key={getGameCode(game)} game={game} />
             ))}
           </div>
         ) : (
@@ -131,7 +147,7 @@ export default function PlayerHome() {
           </div>
           <div className="flex gap-2.5 overflow-x-auto pb-1 -mx-4 px-4 scrollbar-hide">
             {typeGames.slice(0, 8).map((game: any) => (
-              <div key={game.GameCode} className="flex-shrink-0 w-[110px]">
+              <div key={getGameCode(game)} className="flex-shrink-0 w-[110px]">
                 <GameCard game={game} />
               </div>
             ))}
@@ -284,10 +300,10 @@ function GameCard({ game }: { game: any }) {
   return (
     <Card className="overflow-hidden hover:ring-1 hover:ring-primary/40 transition-all cursor-pointer group active:scale-95">
       <div className="aspect-square bg-muted relative overflow-hidden">
-        {game.ImageUrl ? (
+        {getGameImage(game) ? (
           <img
-            src={game.ImageUrl}
-            alt={game.GameName}
+            src={getGameImage(game)}
+            alt={getGameName(game)}
             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
             loading="lazy"
           />
@@ -299,8 +315,8 @@ function GameCard({ game }: { game: any }) {
         <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
       </div>
       <CardContent className="p-2">
-        <p className="text-[11px] font-medium truncate leading-tight">{game.GameName}</p>
-        <p className="text-[10px] text-muted-foreground truncate">{game.GameType}</p>
+        <p className="text-[11px] font-medium truncate leading-tight">{getGameName(game)}</p>
+        <p className="text-[10px] text-muted-foreground truncate">{getGameType(game)}</p>
       </CardContent>
     </Card>
   );

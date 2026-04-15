@@ -6,6 +6,7 @@ import * as db from "../db";
 import { getDb } from "../db";
 import { players, playerTags } from "../../drizzle/schema";
 import { eq, and } from "drizzle-orm";
+import { generateAutoLoginToken } from "../services/auth";
 
 export const adminPlayersRouter = router({
   list: publicProcedure
@@ -96,6 +97,38 @@ export const adminPlayersRouter = router({
       await database.update(players).set({ isActive: input.isActive }).where(and(eq(players.id, input.playerId), eq(players.adminId, admin.adminId!)));
       await db.createAdminLog({ adminId: admin.id, action: input.isActive ? "activate_player" : "deactivate_player", module: "player", targetId: input.playerId, targetType: "player" });
       return { success: true };
+    }),
+
+  loginAsPlayer: publicProcedure
+    .input(z.object({ token: z.string(), playerId: z.number() }))
+    .mutation(async ({ input, ctx }) => {
+      const admin = requireAdmin(ctx);
+      await checkPermission(admin.id, admin.role!, "player", "edit");
+
+      const player = await db.getPlayerById(input.playerId);
+      if (!player || player.adminId !== admin.adminId) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Player not found" });
+      }
+
+      const autoLoginToken = generateAutoLoginToken(player.id, admin.adminId!);
+
+      const acl = await db.getDomainAcl(admin.adminId!);
+      const playerDomain = acl.find((d) => d.isActive && (d.purpose === "player" || d.purpose === "both"))?.domain;
+
+      const origin = (ctx.req.headers.origin as string) || "";
+      const protocol = origin.startsWith("http://") ? "http" : "https";
+      const loginPath = `/login?token=${encodeURIComponent(autoLoginToken)}`;
+      const loginUrl = playerDomain ? `${protocol}://${playerDomain}${loginPath}` : loginPath;
+
+      await db.createAdminLog({
+        adminId: admin.id,
+        action: "login_as_player",
+        module: "player",
+        targetId: player.id,
+        targetType: "player",
+      });
+
+      return { success: true, loginUrl };
     }),
 
   // ─── Anomalous Credit Detection ───

@@ -20,6 +20,30 @@ const TYPE_ICONS: Record<string, any> = {
   Fish: Flame,
 };
 
+function getGameCode(game: any): string {
+  return game?.gameCode || game?.GameCode || "";
+}
+
+function getGameName(game: any): string {
+  return game?.gameName || game?.GameName || "Unknown Game";
+}
+
+function getGameType(game: any): string {
+  return game?.gameType || game?.GameType || "Other";
+}
+
+function getGameProvider(game: any): string {
+  return game?.provider || game?.Provider || "";
+}
+
+function getGameImage(game: any): string {
+  return game?.imageUrl || game?.ImageUrl || "";
+}
+
+function getSupportedPlatforms(game: any): string[] {
+  return game?.supportedPlatforms || game?.SupportedPlatforms || [];
+}
+
 export default function PlayerGames() {
   const { accessToken, isAuthenticated } = usePlayerAuth();
   const [search, setSearch] = useState("");
@@ -45,7 +69,7 @@ export default function PlayerGames() {
     const types: string[] = [];
     const seen = new Set<string>();
     games.forEach((g: any) => {
-      const t = g.GameType || "Other";
+      const t = getGameType(g);
       if (!seen.has(t)) { seen.add(t); types.push(t); }
     });
     return types;
@@ -54,14 +78,14 @@ export default function PlayerGames() {
   const filteredGames = useMemo(() => {
     let result = games;
     if (activeType !== "all") {
-      result = result.filter((g: any) => (g.GameType || "Other") === activeType);
+      result = result.filter((g: any) => getGameType(g) === activeType);
     }
     if (search.trim()) {
       const q = search.toLowerCase();
       result = result.filter((g: any) =>
-        g.GameName?.toLowerCase().includes(q) ||
-        g.GameType?.toLowerCase().includes(q) ||
-        g.Provider?.toLowerCase().includes(q)
+        getGameName(g).toLowerCase().includes(q) ||
+        getGameType(g).toLowerCase().includes(q) ||
+        getGameProvider(g).toLowerCase().includes(q)
       );
     }
     return result;
@@ -69,8 +93,14 @@ export default function PlayerGames() {
 
   const handleLaunch = (game: any) => {
     if (!isAuthenticated) { toast.error("Please login first"); return; }
-    setLaunching(game.GameCode);
-    launchMutation.mutate({ token: accessToken!, provider: game.Provider || "", gameCode: game.GameCode });
+    const gameCode = getGameCode(game);
+    const provider = getGameProvider(game);
+    if (!gameCode || !provider) {
+      toast.error("Game data is incomplete (missing provider/gameCode)");
+      return;
+    }
+    setLaunching(gameCode);
+    launchMutation.mutate({ token: accessToken!, provider, gameCode });
   };
 
   if (!isAuthenticated) {
@@ -121,7 +151,7 @@ export default function PlayerGames() {
         </button>
         {gameTypes.map(type => {
           const Icon = TYPE_ICONS[type] || Gamepad2;
-          const count = games.filter((g: any) => (g.GameType || "Other") === type).length;
+          const count = games.filter((g: any) => getGameType(g) === type).length;
           return (
             <button
               key={type}
@@ -158,15 +188,15 @@ export default function PlayerGames() {
           <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2.5">
             {filteredGames.map((game: any) => (
               <Card
-                key={game.GameCode}
+                key={getGameCode(game)}
                 className="overflow-hidden cursor-pointer hover:ring-1 hover:ring-primary/40 transition-all group active:scale-95"
                 onClick={() => handleLaunch(game)}
               >
                 <div className="aspect-square bg-muted relative overflow-hidden">
-                  {game.ImageUrl ? (
+                  {getGameImage(game) ? (
                     <img
-                      src={game.ImageUrl}
-                      alt={game.GameName}
+                      src={getGameImage(game)}
+                      alt={getGameName(game)}
                       className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
                       loading="lazy"
                     />
@@ -176,7 +206,7 @@ export default function PlayerGames() {
                     </div>
                   )}
                   {/* Launch overlay */}
-                  {launching === game.GameCode ? (
+                  {launching === getGameCode(game) ? (
                     <div className="absolute inset-0 bg-black/70 flex items-center justify-center backdrop-blur-sm">
                       <Loader2 className="w-6 h-6 animate-spin text-white" />
                     </div>
@@ -188,19 +218,19 @@ export default function PlayerGames() {
                     </div>
                   )}
                   {/* Platform badges */}
-                  {game.SupportedPlatforms && (
+                  {getSupportedPlatforms(game).length > 0 && (
                     <div className="absolute top-1 right-1 flex gap-0.5">
-                      {game.SupportedPlatforms.includes("Web") && (
+                      {getSupportedPlatforms(game).includes("Web") && (
                         <div className="w-5 h-5 rounded bg-black/50 backdrop-blur-sm flex items-center justify-center">
                           <Monitor className="w-3 h-3 text-white/80" />
                         </div>
                       )}
-                      {game.SupportedPlatforms.includes("H5") && (
+                      {getSupportedPlatforms(game).includes("H5") && (
                         <div className="w-5 h-5 rounded bg-black/50 backdrop-blur-sm flex items-center justify-center">
                           <Smartphone className="w-3 h-3 text-white/80" />
                         </div>
                       )}
-                      {game.SupportedPlatforms.includes("Download") && (
+                      {getSupportedPlatforms(game).includes("Download") && (
                         <div className="w-5 h-5 rounded bg-black/50 backdrop-blur-sm flex items-center justify-center">
                           <Download className="w-3 h-3 text-white/80" />
                         </div>
@@ -209,8 +239,8 @@ export default function PlayerGames() {
                   )}
                 </div>
                 <CardContent className="p-2">
-                  <p className="text-[11px] font-medium truncate leading-tight">{game.GameName}</p>
-                  <p className="text-[10px] text-muted-foreground truncate">{game.Provider || game.GameType}</p>
+                  <p className="text-[11px] font-medium truncate leading-tight">{getGameName(game)}</p>
+                  <p className="text-[10px] text-muted-foreground truncate">{getGameProvider(game) || getGameType(game)}</p>
                 </CardContent>
               </Card>
             ))}

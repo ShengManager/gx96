@@ -72,11 +72,16 @@ export function AdminAuthProvider({ children }: { children: React.ReactNode }) {
       setUser(meQuery.data as AdminUser);
       setLoading(false);
       if (accessToken) scheduleRefresh(accessToken);
+    } else if (meQuery.isSuccess && !meQuery.data) {
+      // Token exists but backend returns null (invalid/expired/signature mismatch).
+      // Clear stale tokens to avoid infinite loading and repeated failed verification.
+      clearAuth();
+      setLoading(false);
     } else if (meQuery.isError || !accessToken) {
       setUser(null);
       setLoading(false);
     }
-  }, [meQuery.data, meQuery.isError, accessToken]);
+  }, [meQuery.data, meQuery.isError, meQuery.isSuccess, accessToken, scheduleRefresh, clearAuth]);
 
   const login = useCallback(async (username: string, password: string) => {
     const result = await loginMutation.mutateAsync({ username, password });

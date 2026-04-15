@@ -10,11 +10,11 @@ import { Shield, Loader2, LogOut, KeyRound } from "lucide-react";
 const TOKEN_KEY = "topadmin_token";
 
 const CURRENCY_PRESET: Record<string, { timezone: string; countryCode: string; phonePrefix: string }> = {
-  MYR: { timezone: "8", countryCode: "MY", phonePrefix: "+60" },
-  AUD: { timezone: "10", countryCode: "AU", phonePrefix: "+61" },
-  SGD: { timezone: "8", countryCode: "SG", phonePrefix: "+65" },
-  THB: { timezone: "7", countryCode: "TH", phonePrefix: "+66" },
-  USD: { timezone: "0", countryCode: "US", phonePrefix: "+1" },
+  MYR: { timezone: "Asia/Kuala_Lumpur", countryCode: "MY", phonePrefix: "+60" },
+  AUD: { timezone: "Australia/Sydney", countryCode: "AU", phonePrefix: "+61" },
+  SGD: { timezone: "Asia/Singapore", countryCode: "SG", phonePrefix: "+65" },
+  THB: { timezone: "Asia/Bangkok", countryCode: "TH", phonePrefix: "+66" },
+  USD: { timezone: "America/New_York", countryCode: "US", phonePrefix: "+1" },
 };
 
 function buildRandomPassword(length = 14) {
@@ -36,7 +36,7 @@ export default function TopAdminPage() {
   const [currency, setCurrency] = useState("MYR");
   const [countryCode, setCountryCode] = useState("MY");
   const [phonePrefix, setPhonePrefix] = useState("+60");
-  const [timezone, setTimezone] = useState("8");
+  const [timezone, setTimezone] = useState("Asia/Kuala_Lumpur");
   const [defaultLanguage, setDefaultLanguage] = useState("zh");
 
   const [created, setCreated] = useState<{ adminId: number; masterUsername: string; masterPassword: string } | null>(null);
@@ -62,7 +62,17 @@ export default function TopAdminPage() {
     onError: (err) => toast.error(err.message),
   });
 
-  const suggestedTimezoneLabel = useMemo(() => `UTC${Number(timezone) >= 0 ? "+" : ""}${timezone}`, [timezone]);
+  const suggestedTimezoneLabel = useMemo(() => {
+    try {
+      const now = new Date();
+      const dtf = new Intl.DateTimeFormat("en-US", { timeZone: timezone, timeZoneName: "shortOffset" });
+      const parts = dtf.formatToParts(now);
+      const tzName = parts.find((p) => p.type === "timeZoneName")?.value || "UTC";
+      return `${tzName.replace("GMT", "UTC")} (${timezone})`;
+    } catch {
+      return timezone;
+    }
+  }, [timezone]);
 
   const applyCurrencyPreset = (value: string) => {
     const c = value.toUpperCase();
@@ -178,8 +188,8 @@ export default function TopAdminPage() {
               <Input value={currency} onChange={(e) => applyCurrencyPreset(e.target.value)} placeholder="MYR / AUD / SGD..." />
             </div>
             <div className="space-y-2">
-              <Label>Timezone Offset (hour)</Label>
-              <Input value={timezone} onChange={(e) => setTimezone(e.target.value)} placeholder="8" />
+              <Label>Timezone (IANA)</Label>
+              <Input value={timezone} onChange={(e) => setTimezone(e.target.value)} placeholder="Australia/Sydney" />
               <p className="text-xs text-muted-foreground">Current: {suggestedTimezoneLabel}</p>
             </div>
             <div className="space-y-2">
