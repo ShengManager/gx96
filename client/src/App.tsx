@@ -32,6 +32,7 @@ import PlayerHistory from "./pages/player/PlayerHistory";
 import PlayerProfile from "./pages/player/PlayerProfile";
 import PlayerLogin from "./pages/player/PlayerLogin";
 import PlayerLayout from "./pages/player/PlayerLayout";
+import TopAdminPage from "./pages/topadmin/TopAdminPage";
 
 function AdminProtected({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, loading } = useAdminAuth();
@@ -58,6 +59,7 @@ function Router() {
   return (
     <Switch>
       {/* Admin routes */}
+      <Route path="/topadmin" component={TopAdminPage} />
       <Route path="/admin/login" component={AdminLogin} />
       <Route path="/admin">{() => <AdminProtected><AdminDashboard /></AdminProtected>}</Route>
       <Route path="/admin/players">{() => <AdminProtected><AdminPlayers /></AdminProtected>}</Route>

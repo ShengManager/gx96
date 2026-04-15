@@ -7,7 +7,6 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Loader2, Shield, Eye, EyeOff, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
-import { trpc } from "@/lib/trpc";
 
 export default function AdminLogin() {
   const { login, isAuthenticated } = useAdminAuth();
@@ -16,11 +15,7 @@ export default function AdminLogin() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [isSetup, setIsSetup] = useState(false);
-  const [displayName, setDisplayName] = useState("");
-  const [errors, setErrors] = useState<{ username?: string; password?: string; displayName?: string }>({});
-
-  const setupMutation = trpc.adminAuth.setup.useMutation();
+  const [errors, setErrors] = useState<{ username?: string; password?: string }>({});
 
   // Use useEffect for redirect to avoid setState during render
   useEffect(() => {
@@ -38,11 +33,6 @@ export default function AdminLogin() {
     }
     if (!password) {
       newErrors.password = "Password is required";
-    } else if (isSetup && password.length < 6) {
-      newErrors.password = "Password must be at least 6 characters";
-    }
-    if (isSetup && displayName && displayName.trim().length > 50) {
-      newErrors.displayName = "Display name must be under 50 characters";
     }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -67,30 +57,6 @@ export default function AdminLogin() {
     }
   };
 
-  const handleSetup = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!validate()) return;
-    setIsLoading(true);
-    try {
-      await setupMutation.mutateAsync({
-        username: username.trim(),
-        password,
-        displayName: (displayName.trim() || username.trim()),
-      });
-      toast.success("Admin account created! Please login.");
-      setIsSetup(false);
-      setErrors({});
-    } catch (err: any) {
-      const msg = err.message || "Setup failed";
-      toast.error(msg);
-      if (msg.toLowerCase().includes("exist")) {
-        setErrors({ username: "Username already exists" });
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   if (isAuthenticated) return null;
 
   return (
@@ -106,16 +72,11 @@ export default function AdminLogin() {
 
         <Card>
           <CardHeader>
-            <CardTitle>{isSetup ? "Initial Setup" : "Admin Login"}</CardTitle>
-            <CardDescription>
-              {isSetup
-                ? "Create the first master admin account"
-                : "Enter your credentials to access the admin panel"
-              }
-            </CardDescription>
+            <CardTitle>Admin Login</CardTitle>
+            <CardDescription>Enter your credentials to access the admin panel</CardDescription>
           </CardHeader>
           <CardContent>
-            <form onSubmit={isSetup ? handleSetup : handleLogin} className="space-y-4">
+            <form onSubmit={handleLogin} className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="username">Username</Label>
                 <Input
@@ -133,24 +94,6 @@ export default function AdminLogin() {
                 )}
               </div>
 
-              {isSetup && (
-                <div className="space-y-2">
-                  <Label htmlFor="displayName">Display Name</Label>
-                  <Input
-                    id="displayName"
-                    value={displayName}
-                    onChange={e => { setDisplayName(e.target.value); setErrors(prev => ({ ...prev, displayName: undefined })); }}
-                    placeholder="Enter display name (optional)"
-                    className={errors.displayName ? "border-destructive" : ""}
-                  />
-                  {errors.displayName && (
-                    <p className="text-sm text-destructive flex items-center gap-1">
-                      <AlertCircle className="w-3 h-3" /> {errors.displayName}
-                    </p>
-                  )}
-                </div>
-              )}
-
               <div className="space-y-2">
                 <Label htmlFor="password">Password</Label>
                 <div className="relative">
@@ -160,7 +103,7 @@ export default function AdminLogin() {
                     value={password}
                     onChange={e => { setPassword(e.target.value); setErrors(prev => ({ ...prev, password: undefined })); }}
                     placeholder="Enter password"
-                    autoComplete={isSetup ? "new-password" : "current-password"}
+                    autoComplete="current-password"
                     className={errors.password ? "border-destructive" : ""}
                   />
                   <button
@@ -180,19 +123,9 @@ export default function AdminLogin() {
 
               <Button type="submit" className="w-full" disabled={isLoading}>
                 {isLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-                {isSetup ? "Create Admin Account" : "Login"}
+                Login
               </Button>
             </form>
-
-            <div className="mt-4 text-center">
-              <button
-                type="button"
-                onClick={() => { setIsSetup(!isSetup); setErrors({}); }}
-                className="text-sm text-muted-foreground hover:text-primary transition-colors"
-              >
-                {isSetup ? "Back to Login" : "First time? Setup admin account"}
-              </button>
-            </div>
           </CardContent>
         </Card>
       </div>

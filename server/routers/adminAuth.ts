@@ -5,7 +5,6 @@ import {
   adminLogin,
   refreshAccessToken,
   verifyAccessToken,
-  createMasterAdmin,
   hashPassword,
   verifyPassword,
   playerLogin,
@@ -104,29 +103,18 @@ export const adminAuthRouter = router({
     };
   }),
 
-  // Setup initial master admin (only if no admin exists)
+  // Initial setup endpoint is intentionally disabled.
   setup: publicProcedure
     .input(z.object({
       username: z.string().min(3).max(64),
       password: z.string().min(6),
       displayName: z.string().optional(),
     }))
-    .mutation(async ({ input }) => {
-      const db = await getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
-
-      // Check if any admin exists
-      const existing = await db.select().from(adminAccounts).limit(1);
-      if (existing.length > 0) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "Admin already exists. Use login instead." });
-      }
-
-      const result = await createMasterAdmin(input.username, input.password, input.displayName);
-      if (!result.success) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: result.error });
-      }
-
-      return { success: true, adminId: result.adminId };
+    .mutation(async () => {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "Admin self-setup is disabled. Please contact Top Admin.",
+      });
     }),
 
   // Change password
