@@ -54,6 +54,9 @@ X-Project-Token: <project_token>
 
 **JSON 字段**: （见示例）
 
+- `providers[].providerType`：`h5` / `h5login` / `download`。
+- `providers[].providerTypeLabel`：可直接用于前端显示（`H5` / `H5 Login` / `Download`）。
+
 **请求示例**:
 ```json
 {}
@@ -75,12 +78,16 @@ X-Project-Token: <project_token>
       "providerId": 1,
       "providerCode": "EpicWin",
       "providerName": "EpicWin",
+      "providerType": "h5",
+      "providerTypeLabel": "H5",
       "status": "active"
     },
     {
       "providerId": 2,
       "providerCode": "918KissH5",
       "providerName": "918KissH5",
+      "providerType": "h5login",
+      "providerTypeLabel": "H5 Login",
       "status": "inactive"
     }
   ],
@@ -279,6 +286,8 @@ curl -sS -X POST 'https://api.gt96.xyz/api/gateway/KickPlayer' \
 
 - 部分厂商仅返回大厅等少量条目，属适配器实现。
 - 可选字段 `imageUrl`：EpicWin/MegaH5 等若厂商返回 `ImageUrl` 则会映射；未返回则无。
+- EpicWin/MegaH5 的 `gameType` 代码会补充 `gameTypeLabel`（如 1=Slots、6=Fish Arcade）。
+- PussyH5 可在项目 Provider 凭证 `gameTypeMap`（JSON）自定义 `gameTypeLabel` 显示。
 
 **请求示例**:
 ```json
@@ -296,6 +305,7 @@ curl -sS -X POST 'https://api.gt96.xyz/api/gateway/KickPlayer' \
       "gameCode": "45012",
       "gameName": "Example Slot",
       "gameType": "1",
+      "gameTypeLabel": "Slots",
       "imageUrl": "https://vendor-cdn.example/game/45012.png",
       "provider": "EpicWin"
     }
@@ -425,7 +435,7 @@ curl -sS -X POST 'https://api.gt96.xyz/api/gateway/SyncGameLog' \
     {
       "providerCode": "EpicWin",
       "providerName": "EpicWin",
-      "providerType": "web",
+      "providerType": "h5",
       "registered": true,
       "providerPlayerId": "site_user_001",
       "providerData": {

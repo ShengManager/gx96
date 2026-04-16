@@ -57,11 +57,15 @@ export default function PlayerProfile() {
   }
 
   const inviteCode = (inviteQuery.data as any)?.inviteCode;
+  const inviteLink = (inviteQuery.data as any)?.inviteLink as string | undefined;
+  const invitedCount = Number((inviteQuery.data as any)?.invitedCount || 0);
+  const invitedPlayers = ((inviteQuery.data as any)?.invitedPlayers as any[]) || [];
 
   const copyInvite = () => {
-    if (inviteCode) {
-      navigator.clipboard.writeText(inviteCode);
-      toast.success("Invite code copied!");
+    const value = inviteLink || inviteCode;
+    if (value) {
+      navigator.clipboard.writeText(value);
+      toast.success(inviteLink ? "Telegram invite link copied!" : "Invite code copied!");
     }
   };
 
@@ -113,8 +117,10 @@ export default function PlayerProfile() {
                   <Share2 className="w-6 h-6 text-primary" />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-xs text-muted-foreground">Your Invite Code</p>
-                  <p className="text-xl font-mono font-bold text-primary tracking-wider">{inviteCode}</p>
+                  <p className="text-xs text-muted-foreground">Your Telegram Registration Invite</p>
+                  <p className="text-xs font-mono font-bold text-primary break-all">
+                    {inviteLink || inviteCode}
+                  </p>
                 </div>
                 <div className="flex gap-1.5">
                   <Button variant="outline" size="icon" className="h-9 w-9 rounded-xl" onClick={copyInvite}>
@@ -122,7 +128,11 @@ export default function PlayerProfile() {
                   </Button>
                   <Button size="icon" className="h-9 w-9 rounded-xl" onClick={() => {
                     if (navigator.share) {
-                      navigator.share({ title: "Join TgGaming", text: `Use my invite code: ${inviteCode}` });
+                      navigator.share({
+                        title: "Join TgGaming",
+                        text: inviteLink || `Use my invite code: ${inviteCode}`,
+                        url: inviteLink || undefined,
+                      });
                     } else copyInvite();
                   }}>
                     <Share2 className="w-4 h-4" />
@@ -133,6 +143,30 @@ export default function PlayerProfile() {
           </Card>
         </div>
       )}
+
+      {/* Invite List */}
+      <div className="px-4">
+        <Card>
+          <CardContent className="pt-4 space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-semibold">Invited Players</p>
+              <span className="text-xs text-muted-foreground">{invitedCount} total</span>
+            </div>
+            {invitedPlayers.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No invited players yet.</p>
+            ) : (
+              <div className="space-y-1 max-h-40 overflow-y-auto">
+                {invitedPlayers.map((ip: any) => (
+                  <div key={ip.id} className="flex items-center justify-between text-xs border-b border-white/5 pb-1 last:border-0">
+                    <span className="truncate">{ip.phone || `@${ip.telegramUsername || "N/A"}`}</span>
+                    <span className="text-muted-foreground">{new Date(ip.createdAt).toLocaleDateString()}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
       {/* Quick Links */}
       <div className="px-4 space-y-1.5">

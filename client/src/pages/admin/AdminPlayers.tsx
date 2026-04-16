@@ -1,15 +1,14 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAdminAuth } from "@/contexts/AdminAuthContext";
 import { trpc } from "@/lib/trpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Progress } from "@/components/ui/progress";
-import { Search, Eye, UserCheck, UserX, Tag, Star, ChevronLeft, ChevronRight, AlertTriangle, RefreshCw, Loader2, Phone, Globe, Wallet, Calendar, Copy, Shield, LogIn } from "lucide-react";
+import { Search, Eye, UserCheck, UserX, Star, ChevronLeft, ChevronRight, AlertTriangle, RefreshCw, Loader2, Phone, Globe, Wallet, Calendar, Copy, LogIn, Users } from "lucide-react";
 import { toast } from "sonner";
 
 export default function AdminPlayers() {
@@ -37,6 +36,33 @@ export default function AdminPlayers() {
   const vipMutation = trpc.adminPlayers.updateVipLevel.useMutation({
     onSuccess: () => { detailQuery.refetch(); toast.success("VIP level updated"); },
     onError: (err: any) => toast.error(err.message),
+  });
+
+  const manualCreditMutation = trpc.adminPlayers.manualCredit.useMutation({
+    onSuccess: () => {
+      detailQuery.refetch();
+      playersQuery.refetch();
+      toast.success("Credit added to wallet");
+    },
+    onError: (err: any) => toast.error(err.message || "Failed to add credit"),
+  });
+
+  const manualWithdrawMutation = trpc.adminPlayers.manualWithdraw.useMutation({
+    onSuccess: () => {
+      detailQuery.refetch();
+      playersQuery.refetch();
+      toast.success("Wallet withdrawn successfully");
+    },
+    onError: (err: any) => toast.error(err.message || "Failed to withdraw wallet"),
+  });
+
+  const forfeitBonusMutation = trpc.adminPlayers.forfeitBonuses.useMutation({
+    onSuccess: (res: any) => {
+      detailQuery.refetch();
+      playersQuery.refetch();
+      toast.success(`Forfeited ${res?.forfeitedCount || 0} bonus record(s)`);
+    },
+    onError: (err: any) => toast.error(err.message || "Failed to forfeit bonuses"),
   });
 
   const loginAsPlayerMutation = trpc.adminPlayers.loginAsPlayer.useMutation({
@@ -133,8 +159,11 @@ export default function AdminPlayers() {
       </Dialog>
 
       {/* Player Detail Dialog */}
-      <Dialog open={detailOpen} onOpenChange={(v) => { setDetailOpen(v); if (!v) setSelectedPlayer(null); }}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+      <Dialog  open={detailOpen} onOpenChange={(v) => { setDetailOpen(v); if (!v) setSelectedPlayer(null); }}>
+        <DialogContent
+          style={{ width: "98vw", maxWidth: "1200px" }}
+          className="max-h-[92vh] overflow-y-auto overflow-x-hidden p-6"
+        >
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Eye className="w-5 h-5" /> Player Detail #{selectedPlayer}
@@ -151,6 +180,32 @@ export default function AdminPlayers() {
               accessToken={accessToken!}
               onVipChange={(level) => vipMutation.mutate({ token: accessToken!, playerId: selectedPlayer!, vipLevel: level })}
               canEdit={hasPermission("player", "edit")}
+              canManualCredit={hasPermission("deposit", "edit")}
+              onManualCredit={(amount, note, bankId) => manualCreditMutation.mutate({
+                token: accessToken!,
+                playerId: selectedPlayer!,
+                amount,
+                bankId,
+                note,
+              })}
+              creditLoading={manualCreditMutation.isPending}
+              canManualWithdraw={hasPermission("withdraw", "edit")}
+              onManualWithdraw={(amount, note, bankId) => manualWithdrawMutation.mutate({
+                token: accessToken!,
+                playerId: selectedPlayer!,
+                amount,
+                bankId,
+                note,
+              })}
+              withdrawLoading={manualWithdrawMutation.isPending}
+              canForfeitBonus={hasPermission("bonus", "edit")}
+              onForfeitBonus={(amount, note) => forfeitBonusMutation.mutate({
+                token: accessToken!,
+                playerId: selectedPlayer!,
+                amount,
+                note,
+              })}
+              forfeitLoading={forfeitBonusMutation.isPending}
             />
           ) : (
             <div className="py-8 text-center text-muted-foreground">Failed to load player details</div>
@@ -268,238 +323,809 @@ export default function AdminPlayers() {
   );
 }
 
-function PlayerDetail({ data, accessToken, onVipChange, canEdit }: {
-  data: any; accessToken: string; onVipChange: (level: number) => void; canEdit: boolean;
+function PlayerDetail({
+  data,
+  accessToken,
+  onVipChange,
+  canEdit,
+  canManualCredit,
+  onManualCredit,
+  creditLoading,
+  canManualWithdraw,
+  onManualWithdraw,
+  withdrawLoading,
+  canForfeitBonus,
+  onForfeitBonus,
+  forfeitLoading,
+}: {
+  data: any;
+  accessToken: string;
+  onVipChange: (level: number) => void;
+  canEdit: boolean;
+  canManualCredit: boolean;
+  onManualCredit: (amount: number, note: string | undefined, bankId: number) => void;
+  creditLoading: boolean;
+  canManualWithdraw: boolean;
+  onManualWithdraw: (amount: number, note: string | undefined, bankId: number) => void;
+  withdrawLoading: boolean;
+  canForfeitBonus: boolean;
+  onForfeitBonus: (amount: number, note?: string) => void;
+  forfeitLoading: boolean;
 }) {
   const p = data.player;
+  const [opType, setOpType] = useState<"deposit" | "withdraw" | "forfeit">("deposit");
+  const [opAmount, setOpAmount] = useState("");
+  const [opNote, setOpNote] = useState("");
+  const [opBankId, setOpBankId] = useState<string>("");
+  const [logScope, setLogScope] = useState<"all" | "current_cycle">("current_cycle");
+  const [logPage, setLogPage] = useState(1);
+  const logPageSize = 20;
   const sn = (v: any) => typeof v === "number" ? v : parseFloat(v) || 0;
+  const fmtCurrency = (v: any) => `$${sn(v).toFixed(2)}`;
+  const walletBalanceNum = sn(data.walletBalance || 0);
+  const localBookNum = sn(data.localWalletBalance ?? data.walletBalance ?? 0);
+  const providerBalances = Array.isArray(data.providerBalances) ? data.providerBalances : [];
+  const invitedCount = Number(data.invitedCount ?? 0);
+  const [detailTab, setDetailTab] = useState("transaction");
+  const [invitedListPage, setInvitedListPage] = useState(1);
+  const invitedListPageSize = 15;
+  const invitedListQuery = trpc.adminPlayers.invitedList.useQuery(
+    {
+      token: accessToken,
+      playerId: Number(p.id),
+      page: invitedListPage,
+      pageSize: invitedListPageSize,
+    },
+    { enabled: !!accessToken && !!p.id && detailTab === "invited" }
+  );
+  const invitedListTotal = Number((invitedListQuery.data as any)?.total || 0);
+  const invitedListRows = Array.isArray((invitedListQuery.data as any)?.rows)
+    ? (invitedListQuery.data as any).rows
+    : [];
+  const invitedListTotalPages = Math.max(1, Math.ceil(invitedListTotal / invitedListPageSize));
+
+  useEffect(() => {
+    setDetailTab("transaction");
+    setInvitedListPage(1);
+  }, [p.id]);
+  const middlewaveLogsQuery = trpc.adminPlayers.middlewaveGameLogs.useQuery(
+    {
+      token: accessToken,
+      playerId: Number(data?.player?.id || 0),
+      page: logPage,
+      pageSize: logPageSize,
+      scope: logScope,
+    },
+    { enabled: !!accessToken && !!data?.player?.id }
+  );
+  const middlewaveGameLogs = Array.isArray((middlewaveLogsQuery.data as any)?.logs)
+    ? (middlewaveLogsQuery.data as any).logs
+    : [];
+  const middlewaveGameLogError = (middlewaveLogsQuery.data as any)?.error as string | undefined;
+  const middlewaveTotal = Number((middlewaveLogsQuery.data as any)?.total || 0);
+  const middlewaveTotalPages = Math.max(1, Math.ceil(middlewaveTotal / logPageSize));
+  const depositBanks = Array.isArray(data.depositBanks) ? data.depositBanks : [];
+  const withdrawBanks = Array.isArray(data.withdrawBanks) ? data.withdrawBanks : [];
+  const providerCredits = providerBalances.reduce((sum: number, b: any) => sum + Math.max(0, sn(b.balance)), 0);
+  const realtimeWalletNum = providerCredits > 0 ? providerCredits : localBookNum;
+  const hasAnyCredits = localBookNum > 0 || providerCredits > 0;
+  const activeProviderBalances = providerBalances.filter((b: any) => sn(b.balance) > 0);
+  const sortedProviderBalances = [...providerBalances].sort((a: any, b: any) => String(a.provider).localeCompare(String(b.provider)));
+  const withdrawalCheck = data?.withdrawalCheck || null;
+  const canWithdrawNow = Boolean(withdrawalCheck?.canWithdraw);
+  const withdrawConditionReason = String(withdrawalCheck?.reason || "Withdrawal conditions not met");
+  const withdrawableByCondition = sn(withdrawalCheck?.maxWithdrawable ?? data.walletBalance ?? 0);
+  const effectiveWithdrawLimit = Math.max(0, Math.min(walletBalanceNum, withdrawableByCondition));
+  const wcHasEnteredGame = Boolean(withdrawalCheck?.hasEnteredGame);
+  const wcRolloverCurrent = sn(withdrawalCheck?.rolloverProgress?.current);
+  const wcRolloverTarget = sn(withdrawalCheck?.rolloverProgress?.target);
+  const wcTurnoverCurrent = sn(withdrawalCheck?.turnoverProgress?.current);
+  const wcTurnoverTarget = sn(withdrawalCheck?.turnoverProgress?.target);
+  const hasRolloverTarget = wcRolloverTarget > 0;
+  const hasTurnoverTarget = wcTurnoverTarget > 0;
+  const wcRolloverMet = !hasRolloverTarget || wcRolloverCurrent + 1e-9 >= wcRolloverTarget;
+  const wcTurnoverMet = !hasTurnoverTarget || wcTurnoverCurrent + 1e-9 >= wcTurnoverTarget;
+  const wcMinWithdraw = typeof withdrawalCheck?.minWithdraw === "number" ? Math.max(0, sn(withdrawalCheck.minWithdraw)) : undefined;
+  const wcMinWithdrawMet = wcMinWithdraw === undefined || walletBalanceNum + 1e-9 >= wcMinWithdraw;
+
+  useEffect(() => {
+    if (!hasAnyCredits && opType !== "deposit") {
+      setOpType("deposit");
+      setOpBankId("");
+      setOpAmount("");
+    }
+    if (hasAnyCredits && opType === "deposit") {
+      setOpType(canManualWithdraw ? "withdraw" : "forfeit");
+      setOpBankId("");
+      setOpAmount(walletBalanceNum > 0 ? Number(walletBalanceNum.toFixed(4)).toString() : "");
+    }
+    if (hasAnyCredits && (opType === "withdraw" || opType === "forfeit")) {
+      setOpAmount(walletBalanceNum > 0 ? Number(walletBalanceNum.toFixed(4)).toString() : "");
+    }
+  }, [hasAnyCredits, opType, canManualWithdraw, walletBalanceNum]);
+
+  useEffect(() => {
+    setLogPage(1);
+  }, [data?.player?.id, logScope]);
+
+  const transactions = useMemo(() => {
+    const deposits = (data.depositHistory || []).map((d: any) => ({
+      id: `deposit-${d.id}`,
+      rawId: d.id,
+      type: "deposit" as const,
+      amount: sn(d.amount),
+      status: d.status || "pending",
+      time: d.createdAt,
+      ts: new Date(d.createdAt).getTime(),
+      note: d.paymentMethod || "bank",
+    }));
+
+    const withdrawals = (data.withdrawHistory || []).map((w: any) => {
+      const handleNote = String(w.handleNote || "").toLowerCase();
+      const isForfeitedOp = handleNote.includes("forfeit");
+      return ({
+      id: `withdraw-${w.id}`,
+      rawId: w.id,
+      type: isForfeitedOp ? "forfeited" as const : "withdraw" as const,
+      amount: sn(w.amount),
+      status: w.status || "pending",
+      time: w.createdAt,
+      ts: new Date(w.createdAt).getTime(),
+      note: isForfeitedOp ? "forfeited" : "withdraw",
+    });
+    });
+
+    const bonuses = (data.bonuses || []).map((b: any) => ({
+      id: `bonus-${b.id}`,
+      rawId: b.id,
+      type: b.status === "forfeited" ? "forfeited" : "bonus",
+      amount: sn(b.bonusAmount),
+      status: b.status || "active",
+      time: b.claimedAt,
+      ts: new Date(b.claimedAt).getTime(),
+      note: b.bonusName || `Bonus #${b.bonusConfigId}`,
+    }));
+
+    return [...deposits, ...withdrawals, ...bonuses]
+      .filter((t) => Number.isFinite(t.ts))
+      .sort((a, b) => a.ts - b.ts);
+  }, [data, sn]);
+
+  const transactionTypeClass: Record<string, string> = {
+    deposit: "text-emerald-400",
+    withdraw: "text-red-400",
+    bonus: "text-amber-400",
+    forfeited: "text-rose-400",
+  };
+
+  const transactionTypeLabel: Record<string, string> = {
+    deposit: "Deposit",
+    withdraw: "Withdraw",
+    bonus: "Bonus",
+    forfeited: "Forfeited",
+  };
+
+  const submitOperation = () => {
+    if (opType === "forfeit") {
+      const amount = Number(opAmount);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        toast.error("Please input a valid forfeited amount");
+        return;
+      }
+      if (amount > walletBalanceNum + 0.0001) {
+        toast.error(`Forfeited amount cannot exceed wallet balance (${walletBalanceNum.toFixed(2)})`);
+        return;
+      }
+      onForfeitBonus(amount, opNote.trim() || undefined);
+      setOpAmount("");
+      setOpNote("");
+      return;
+    }
+
+    const amount = Number(opAmount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      toast.error("Please input a valid amount");
+      return;
+    }
+
+    if (opType === "deposit") {
+      if (!opBankId) {
+        toast.error("Please select a deposit bank");
+        return;
+      }
+      onManualCredit(amount, opNote.trim() || undefined, Number(opBankId));
+    } else {
+      if (!canWithdrawNow) {
+        toast.error(withdrawConditionReason);
+        return;
+      }
+      if (!opBankId) {
+        toast.error("Please select a withdraw bank");
+        return;
+      }
+      if (amount > effectiveWithdrawLimit + 0.0001) {
+        toast.error(`Withdraw amount cannot exceed withdrawable balance (${effectiveWithdrawLimit.toFixed(4)})`);
+        return;
+      }
+      onManualWithdraw(amount, opNote.trim() || undefined, Number(opBankId));
+    }
+    setOpAmount("");
+    setOpNote("");
+    if (opType === "deposit") setOpBankId("");
+  };
+
+  const canSubmitOperation =
+    opType === "forfeit"
+      ? canForfeitBonus && !forfeitLoading
+      : opType === "deposit"
+        ? canManualCredit && !creditLoading
+        : canManualWithdraw && !withdrawLoading && canWithdrawNow;
 
   return (
-    <div className="space-y-6">
-      {/* Player Info Header */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Card className="md:col-span-2">
-          <CardContent className="pt-6">
-            <div className="flex items-start gap-4">
-              <div className="w-14 h-14 rounded-full bg-primary/20 flex items-center justify-center text-primary text-xl font-bold">
-                {(p.telegramFirstName || "?")[0]}
+    <div className="space-y-4">
+      <Card className="border-white/10">
+        <CardContent className="pt-4 pb-4">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+            <div className="lg:col-span-7 flex items-start gap-3 min-w-0">
+              <div className="w-11 h-11 rounded-full bg-primary/20 flex items-center justify-center text-primary text-base font-bold shrink-0">
+                {(p.telegramFirstName || "?").slice(0, 1)}
               </div>
-              <div className="flex-1 space-y-3">
+              <div className="min-w-0 flex-1 space-y-2">
                 <div>
-                  <h3 className="text-lg font-bold">{p.telegramFirstName} {p.telegramLastName || ""}</h3>
-                  <p className="text-sm text-muted-foreground">@{p.telegramUsername || "N/A"} | TG ID: {p.telegramId}</p>
+                  <h3 className="text-base font-semibold leading-tight">
+                    {p.telegramFirstName} {p.telegramLastName || ""}
+                  </h3>
+                  <p className="text-xs text-muted-foreground mt-0.5 truncate">
+                    @{p.telegramUsername || "N/A"} · TG {p.telegramId}
+                  </p>
+                  {data.inviter && (
+                    <p className="text-xs mt-1.5 text-foreground/90">
+                      <span className="text-muted-foreground">邀请人</span>{" "}
+                      <span className="font-medium">#{data.inviter.id}</span>
+                      <span className="text-muted-foreground mx-1">·</span>
+                      <span>{data.inviter.label}</span>
+                    </p>
+                  )}
                 </div>
-                <div className="grid grid-cols-2 gap-3 text-sm">
-                  <div className="flex items-center gap-2"><Phone className="w-3.5 h-3.5 text-muted-foreground" /> {p.phone || "N/A"}</div>
-                  <div className="flex items-center gap-2"><Globe className="w-3.5 h-3.5 text-muted-foreground" /> {p.countryCode || "N/A"}</div>
-                  <div className="flex items-center gap-2">
-                    <Copy className="w-3.5 h-3.5 text-muted-foreground" />
-                    <span className="font-mono">{p.inviteCode}</span>
-                    <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => { navigator.clipboard.writeText(p.inviteCode); toast.success("Copied"); }}>
-                      <Copy className="w-3 h-3" />
-                    </Button>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] sm:text-xs rounded-md border border-white/10 bg-black/20 p-2">
+                  <div className="flex items-center gap-1.5 min-w-0 col-span-2 sm:col-span-1">
+                    <Phone className="w-3 h-3 text-muted-foreground shrink-0" />
+                    <span className="truncate">{p.phone || "N/A"}</span>
                   </div>
-                  <div className="flex items-center gap-2"><Calendar className="w-3.5 h-3.5 text-muted-foreground" /> {new Date(p.createdAt).toLocaleString()}</div>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <Globe className="w-3 h-3 text-muted-foreground shrink-0" />
+                    <span className="truncate">{p.countryCode || "N/A"}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 min-w-0 col-span-2 sm:col-span-2">
+                    <Copy className="w-3 h-3 text-muted-foreground shrink-0" />
+                    <span className="font-mono truncate">{data.telegramInviteLink || p.inviteCode || "N/A"}</span>
+                    {!!(data.telegramInviteLink || p.inviteCode) && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 shrink-0"
+                        onClick={() => {
+                          navigator.clipboard.writeText(data.telegramInviteLink || p.inviteCode);
+                          toast.success("Copied");
+                        }}
+                      >
+                        <Copy className="w-3 h-3" />
+                      </Button>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5 min-w-0 col-span-2 sm:col-span-2">
+                    <Calendar className="w-3 h-3 text-muted-foreground shrink-0" />
+                    <span className="truncate">{new Date(p.createdAt).toLocaleString()}</span>
+                  </div>
                 </div>
               </div>
             </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="pt-6 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">Status</span>
-              <span className={`status-badge ${p.isActive ? "status-approved" : "status-rejected"}`}>
-                {p.isActive ? "Active" : "Inactive"}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">VIP Level</span>
-              <div className="flex items-center gap-1">
-                <Star className="w-4 h-4 text-yellow-500" />
-                <span className="font-bold">{p.vipLevel}</span>
+            <div className="lg:col-span-5 grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs rounded-md border border-white/10 bg-card/40 p-2.5">
+              <div className="flex items-center justify-between gap-2 sm:col-span-1">
+                <span className="text-muted-foreground shrink-0">Status</span>
+                <Badge variant={p.isActive ? "default" : "destructive"} className="text-[10px] px-1.5 py-0 h-5">
+                  {p.isActive ? "Active" : "Inactive"}
+                </Badge>
               </div>
-            </div>
-            {canEdit && (
-              <div>
-                <p className="text-xs text-muted-foreground mb-1">Set VIP Level</p>
-                <div className="flex gap-1">
-                  {[0, 1, 2, 3, 4, 5].map(l => (
-                    <Button key={l} variant={p.vipLevel === l ? "default" : "outline"} size="sm" className="w-8 h-8 p-0 text-xs" onClick={() => onVipChange(l)}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-muted-foreground shrink-0">VIP</span>
+                <span className="flex items-center gap-0.5 font-semibold">
+                  <Star className="w-3 h-3 text-yellow-500 shrink-0" />
+                  {p.vipLevel}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-muted-foreground shrink-0">Invited</span>
+                <span className="font-mono font-semibold">{invitedCount}</span>
+              </div>
+              {canEdit && (
+                <div className="col-span-2 sm:col-span-3 flex flex-wrap items-center gap-1 pt-1 border-t border-white/10">
+                  <span className="text-muted-foreground mr-1 w-full sm:w-auto shrink-0">等级</span>
+                  {[0, 1, 2, 3, 4, 5].map((l) => (
+                    <Button
+                      key={l}
+                      type="button"
+                      variant={p.vipLevel === l ? "default" : "outline"}
+                      size="sm"
+                      className="h-7 w-7 p-0 text-[10px]"
+                      onClick={() => onVipChange(l)}
+                    >
                       {l}
                     </Button>
                   ))}
                 </div>
+              )}
+              <div className="col-span-2 sm:col-span-3 space-y-1 pt-1 border-t border-white/10 min-w-0">
+                <div className="flex gap-1 min-w-0">
+                  <span className="text-muted-foreground shrink-0">Bank</span>
+                  <span className="font-mono truncate text-foreground/90">{p.bankName || "N/A"}</span>
+                </div>
+                <div className="flex gap-1 min-w-0">
+                  <span className="text-muted-foreground shrink-0">Acct</span>
+                  <span className="font-mono truncate text-foreground/90">{p.bankAccountNumber || "N/A"}</span>
+                </div>
               </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
+        <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4 h-auto gap-1 p-1">
+          <TabsTrigger value="transaction" className="text-[10px] sm:text-xs px-1">
+            TRANSACTION
+          </TabsTrigger>
+          <TabsTrigger value="credits" className="text-[10px] sm:text-xs px-1">
+            CREDIT
+          </TabsTrigger>
+          <TabsTrigger value="logs" className="text-[10px] sm:text-xs px-1">
+            GAME LOG
+          </TabsTrigger>
+          <TabsTrigger value="invited" className="text-[10px] sm:text-xs px-1 gap-1">
+            <Users className="w-3 h-3 shrink-0 opacity-70" />
+            INVITED
+            {invitedCount > 0 && (
+              <Badge variant="secondary" className="ml-0.5 h-4 min-w-4 px-1 text-[9px] py-0">
+                {invitedCount}
+              </Badge>
             )}
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">Bank</span>
-              <span className="text-sm font-mono">{p.bankName || "N/A"}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">Account</span>
-              <span className="text-sm font-mono">{p.bankAccountNumber || "N/A"}</span>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Active Deposit Cycle */}
-      {data.activeCycle && (
-        <Card className="border-primary/30 bg-primary/5">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm flex items-center gap-2">
-              <Wallet className="w-4 h-4" /> Active Deposit Cycle
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
-              <div>
-                <p className="text-muted-foreground">Deposit</p>
-                <p className="text-lg font-bold text-green-500">${sn(data.activeCycle.depositAmount).toFixed(2)}</p>
-              </div>
-              <div>
-                <p className="text-muted-foreground">Bonus</p>
-                <p className="text-lg font-bold text-purple-500">${sn(data.activeCycle.bonusAmount).toFixed(2)}</p>
-              </div>
-              <div>
-                <p className="text-muted-foreground">Withdrawn</p>
-                <p className="text-lg font-bold text-red-500">${sn(data.activeCycle.totalWithdrawn).toFixed(2)}</p>
-              </div>
-              <div className="md:col-span-3 space-y-2">
-                <div>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span>Rollover</span>
-                    <span className="font-mono">{sn(data.activeCycle.currentRollover).toFixed(2)} / {sn(data.activeCycle.targetRollover).toFixed(2)}</span>
-                  </div>
-                  <Progress value={sn(data.activeCycle.targetRollover) > 0 ? Math.min(100, (sn(data.activeCycle.currentRollover) / sn(data.activeCycle.targetRollover)) * 100) : 100} className="h-2" />
-                </div>
-                <div>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span>Turnover</span>
-                    <span className="font-mono">{sn(data.activeCycle.currentTurnover).toFixed(2)} / {sn(data.activeCycle.targetTurnover).toFixed(2)}</span>
-                  </div>
-                  <Progress value={sn(data.activeCycle.targetTurnover) > 0 ? Math.min(100, (sn(data.activeCycle.currentTurnover) / sn(data.activeCycle.targetTurnover)) * 100) : 100} className="h-2" />
-                </div>
-                <div className="flex items-center gap-2 text-xs">
-                  <Shield className="w-3.5 h-3.5" />
-                  Game Entered: <Badge variant={data.activeCycle.hasEnteredGame ? "default" : "secondary"}>{data.activeCycle.hasEnteredGame ? "Yes" : "No"}</Badge>
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Tags */}
-      {data.tags?.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {data.tags.map((t: any) => (
-            <Badge key={t.id} variant="secondary" className="gap-1"><Tag className="w-3 h-3" />{t.tag}</Badge>
-          ))}
-        </div>
-      )}
-
-      {/* Tabbed History */}
-      <Tabs defaultValue="deposits" className="space-y-3">
-        <TabsList className="grid grid-cols-3 w-full">
-          <TabsTrigger value="deposits">Deposits ({data.depositHistory?.length || 0})</TabsTrigger>
-          <TabsTrigger value="withdrawals">Withdrawals ({data.withdrawHistory?.length || 0})</TabsTrigger>
-          <TabsTrigger value="bonuses">Bonuses ({data.bonusHistory?.length || 0})</TabsTrigger>
+          </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="deposits">
-          <div className="max-h-64 overflow-y-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>ID</TableHead>
-                  <TableHead>Amount</TableHead>
-                  <TableHead>Method</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Date</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {data.depositHistory?.map((d: any) => (
-                  <TableRow key={d.id}>
-                    <TableCell className="font-mono text-xs">#{d.id}</TableCell>
-                    <TableCell className="font-bold">${sn(d.amount).toFixed(2)}</TableCell>
-                    <TableCell className="text-sm">{d.paymentMethod || "bank"}</TableCell>
-                    <TableCell>
-                      <span className={`status-badge ${d.status === "approved" ? "status-approved" : d.status === "rejected" ? "status-rejected" : "status-pending"}`}>{d.status}</span>
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{new Date(d.createdAt).toLocaleString()}</TableCell>
+        <TabsContent value="transaction" className="mt-0">
+          <div className="rounded-lg border border-white/10 bg-card/30 p-3">
+            <div className="text-xs text-muted-foreground mb-3">
+              Ordered by datetime (oldest → newest)
+            </div>
+            <div className="max-h-[340px] overflow-y-auto overflow-x-auto rounded-md">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Date</TableHead>
+                    <TableHead>Type</TableHead>
+                    <TableHead className="text-right">Amount</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Reference</TableHead>
                   </TableRow>
-                ))}
-                {(!data.depositHistory || data.depositHistory.length === 0) && (
-                  <TableRow><TableCell colSpan={5} className="text-center py-4 text-muted-foreground">No deposit history</TableCell></TableRow>
-                )}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {transactions.map((tx) => (
+                    <TableRow key={tx.id}>
+                      <TableCell className="text-xs font-mono whitespace-nowrap">
+                        {new Date(tx.time).toLocaleString()}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className={`${transactionTypeClass[tx.type]} border-current/40`}>
+                          {transactionTypeLabel[tx.type]}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className={`text-right font-semibold ${transactionTypeClass[tx.type]}`}>
+                        {tx.type === "withdraw" || tx.type === "forfeited" ? "-" : "+"}
+                        {fmtCurrency(tx.amount)}
+                      </TableCell>
+                      <TableCell>
+                        <span className={`status-badge ${tx.status === "approved" || tx.status === "completed" ? "status-approved" : tx.status === "rejected" ? "status-rejected" : "status-pending"}`}>
+                          {tx.status}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        Order #{tx.rawId} · {tx.note}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {transactions.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
+                        No transaction history
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
           </div>
         </TabsContent>
 
-        <TabsContent value="withdrawals">
-          <div className="max-h-64 overflow-y-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>ID</TableHead>
-                  <TableHead>Amount</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Date</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {data.withdrawHistory?.map((w: any) => (
-                  <TableRow key={w.id}>
-                    <TableCell className="font-mono text-xs">#{w.id}</TableCell>
-                    <TableCell className="font-bold">${sn(w.amount).toFixed(2)}</TableCell>
-                    <TableCell>
-                      <span className={`status-badge ${w.status === "approved" ? "status-approved" : w.status === "rejected" ? "status-rejected" : "status-pending"}`}>{w.status}</span>
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{new Date(w.createdAt).toLocaleString()}</TableCell>
-                  </TableRow>
-                ))}
-                {(!data.withdrawHistory || data.withdrawHistory.length === 0) && (
-                  <TableRow><TableCell colSpan={4} className="text-center py-4 text-muted-foreground">No withdrawal history</TableCell></TableRow>
+        <TabsContent value="credits" className="mt-0">
+          <Card className="border-white/10">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center justify-between">
+                <span className="flex items-center gap-2">
+                  <Wallet className="w-4 h-4 text-primary" />
+                  Current Game Credits (All Providers)
+                </span>
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="font-mono">
+                    Wallet: {fmtCurrency(realtimeWalletNum)}
+                  </Badge>
+                  <Badge variant="secondary" className="font-mono">
+                    Withdrawable: {fmtCurrency(data.walletBalance || 0)}
+                  </Badge>
+                </div>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="text-xs text-muted-foreground">
+                Wallet is real-time provider credits. Withdrawable is capped by cycle book (risk-control rule).
+              </div>
+              <div className={`rounded-md border px-3 py-2 text-xs ${
+                canWithdrawNow
+                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                  : "border-amber-500/30 bg-amber-500/10 text-amber-300"
+              }`}>
+                {canWithdrawNow
+                  ? `Withdraw Conditions: Passed · Max withdrawable ${fmtCurrency(withdrawableByCondition)}`
+                  : `Withdraw Conditions: Not met · ${withdrawConditionReason}`}
+              </div>
+              <div className="rounded-md border border-white/10 bg-black/20 px-3 py-2 text-xs space-y-1.5">
+                <div className="font-medium text-white/90">Condition Breakdown</div>
+                <div className={wcHasEnteredGame ? "text-emerald-300" : "text-amber-300"}>
+                  {wcHasEnteredGame ? "PASS" : "FAIL"} · Entered game
+                </div>
+                {hasRolloverTarget && (
+                  <div className={wcRolloverMet ? "text-emerald-300" : "text-amber-300"}>
+                    {wcRolloverMet ? "PASS" : "FAIL"} · Rollover {wcRolloverCurrent.toFixed(2)} / {wcRolloverTarget.toFixed(2)}
+                  </div>
                 )}
-              </TableBody>
-            </Table>
-          </div>
+                {hasTurnoverTarget && (
+                  <div className={wcTurnoverMet ? "text-emerald-300" : "text-amber-300"}>
+                    {wcTurnoverMet ? "PASS" : "FAIL"} · Turnover {wcTurnoverCurrent.toFixed(2)} / {wcTurnoverTarget.toFixed(2)}
+                  </div>
+                )}
+                {wcMinWithdraw !== undefined && (
+                  <div className={wcMinWithdrawMet ? "text-emerald-300" : "text-amber-300"}>
+                    {wcMinWithdrawMet ? "PASS" : "FAIL"} · Min withdraw {fmtCurrency(wcMinWithdraw)} (wallet {fmtCurrency(walletBalanceNum)})
+                  </div>
+                )}
+                <div className="text-white/70">
+                  Current max withdrawable: {fmtCurrency(effectiveWithdrawLimit)}
+                </div>
+              </div>
+              {(canManualCredit || canManualWithdraw || canForfeitBonus) && (
+                <div className="rounded-md border border-primary/25 bg-primary/5 p-3 space-y-2">
+                  <div className="text-xs uppercase tracking-wide text-primary/90">Credit Operation</div>
+                  <div className="grid grid-cols-1 md:grid-cols-[160px_180px_1fr_auto] gap-2">
+                    <select
+                      value={opType}
+                      onChange={(e) => {
+                        const next = e.target.value as "deposit" | "withdraw" | "forfeit";
+                        setOpType(next);
+                        if (next !== "deposit") setOpBankId("");
+                      }}
+                      className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+                    >
+                      {canManualCredit && !hasAnyCredits && <option value="deposit">DEPOSIT</option>}
+                      {canManualWithdraw && hasAnyCredits && <option value="withdraw">WITHDRAW</option>}
+                      {canForfeitBonus && hasAnyCredits && <option value="forfeit">FORFEITED</option>}
+                    </select>
+                    <Input
+                      placeholder="Amount"
+                      inputMode="decimal"
+                      value={opAmount}
+                      onChange={(e) => setOpAmount(e.target.value)}
+                    />
+                    <Input
+                      placeholder="Remarks (optional)"
+                      value={opNote}
+                      onChange={(e) => setOpNote(e.target.value)}
+                    />
+                    <Button
+                      onClick={submitOperation}
+                      disabled={!canSubmitOperation}
+                      variant="default"
+                    >
+                      {(creditLoading || withdrawLoading || forfeitLoading) ? <Loader2 className="w-4 h-4 animate-spin" /> : "CONFIRM"}
+                    </Button>
+                  </div>
+                  {(opType === "deposit" || opType === "withdraw") && (
+                    <div className="space-y-1">
+                      <div className="text-xs text-muted-foreground">Transfer Bank</div>
+                      <select
+                        value={opBankId}
+                        onChange={(e) => setOpBankId(e.target.value)}
+                        className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+                      >
+                        <option value="">
+                          {opType === "deposit" ? "Select deposit bank..." : "Select withdraw bank..."}
+                        </option>
+                        {(opType === "deposit" ? depositBanks : withdrawBanks).map((b: any) => (
+                          <option key={b.id} value={String(b.id)}>
+                            {b.bankName} ({b.accountName} / {b.accountNumber})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  {canManualCredit && hasAnyCredits && opType === "deposit" && (
+                    <p className="text-xs text-amber-500">
+                      Deposit is allowed only when wallet and provider credits are both zero.
+                    </p>
+                  )}
+                  {(opType === "withdraw" || opType === "forfeit") && (
+                    <p className="text-xs text-muted-foreground">
+                      {opType === "forfeit"
+                        ? `Forfeited amount max: ${fmtCurrency(walletBalanceNum)}`
+                        : `Withdraw up to ${fmtCurrency(effectiveWithdrawLimit)} (partial allowed). Cycle book: ${fmtCurrency(localBookNum)} · Providers total: ${fmtCurrency(data.providerBalanceTotal || 0)}`}
+                    </p>
+                  )}
+                  {opType === "withdraw" && !canWithdrawNow && (
+                    <p className="text-xs text-amber-400">{withdrawConditionReason}</p>
+                  )}
+                </div>
+              )}
+
+              {data.providerBalanceError && (
+                <div className="text-xs text-amber-500 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2">
+                  {data.providerBalanceError}
+                </div>
+              )}
+              {sortedProviderBalances.length > 0 ? (
+                <div className="rounded-md border border-white/10 overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/40">
+                      <tr>
+                        <th className="text-left px-3 py-2 font-medium">Provider</th>
+                        <th className="text-right px-3 py-2 font-medium">Balance</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedProviderBalances.map((b: any) => (
+                        <tr key={b.provider} className="border-t border-white/10">
+                          <td className="px-3 py-2">
+                            <div className="truncate">{b.provider}</div>
+                            {b.error && <div className="text-[11px] text-muted-foreground truncate">{b.error}</div>}
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono">{fmtCurrency(b.balance)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground">No provider balance data</div>
+              )}
+              {activeProviderBalances.length > 1 && (
+                <p className="text-xs text-amber-500">
+                  This player currently has credits in multiple providers ({activeProviderBalances.length}).
+                </p>
+              )}
+
+            </CardContent>
+          </Card>
+        </TabsContent>
+        <TabsContent value="logs" className="mt-0">
+          <Card className="border-white/10">
+            <CardContent className="pt-4 space-y-2">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="text-xs uppercase tracking-wide text-primary/90">Middlewave Game Logs</div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant={logScope === "current_cycle" ? "default" : "outline"}
+                    onClick={() => setLogScope("current_cycle")}
+                  >
+                    This Deposit
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={logScope === "all" ? "default" : "outline"}
+                    onClick={() => setLogScope("all")}
+                  >
+                    All
+                  </Button>
+                </div>
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {logScope === "current_cycle"
+                  ? "Showing games under current active deposit cycle."
+                  : "Showing all available game logs for this player."}
+              </div>
+              {middlewaveGameLogError && (
+                <div className="text-xs text-amber-500 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2">
+                  {middlewaveGameLogError}
+                </div>
+              )}
+              <div className="rounded-md border border-white/10 overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead className="bg-muted/40">
+                    <tr>
+                      <th className="text-left px-2 py-2 font-medium">Time</th>
+                      <th className="text-left px-2 py-2 font-medium">Provider</th>
+                      <th className="text-left px-2 py-2 font-medium">Game</th>
+                      <th className="text-right px-2 py-2 font-medium">Bet</th>
+                      <th className="text-right px-2 py-2 font-medium">Payout</th>
+                      <th className="text-right px-2 py-2 font-medium">Win/Loss</th>
+                      <th className="text-right px-2 py-2 font-medium">Balance</th>
+                      <th className="text-left px-2 py-2 font-medium">Ref</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {middlewaveGameLogs.slice(0, 50).map((g: any, idx: number) => {
+                      const entryType = String(g.entryType || "game");
+                      const isDepositMarker = entryType === "deposit";
+                      const isForfeitMarker = entryType === "forfeited";
+                      const isWithdrawMarker = entryType === "withdraw";
+                      const wl = sn(g.winLose);
+                      const markerAmount = sn(g.eventAmount || 0);
+                      return (
+                        <tr key={`${g.providerTranId || "mw"}-${idx}`} className="border-t border-white/10">
+                          <td className="px-2 py-2 whitespace-nowrap">{g.transactionDate ? new Date(g.transactionDate).toLocaleString() : "-"}</td>
+                          <td className="px-2 py-2">{g.provider || "-"}</td>
+                          <td className="px-2 py-2">
+                            <div className={`truncate max-w-[220px] ${
+                              isDepositMarker
+                                ? "text-emerald-300 font-semibold"
+                                : isForfeitMarker || isWithdrawMarker
+                                  ? "text-rose-300 font-semibold"
+                                  : ""
+                            }`}>
+                              {isDepositMarker ? "DEPOSIT" : isForfeitMarker ? "FORFEITED" : isWithdrawMarker ? "WITHDRAW" : (g.gameName || g.gameCode || "-")}
+                            </div>
+                          </td>
+                          <td className="px-2 py-2 text-right font-mono">
+                            {isDepositMarker || isForfeitMarker || isWithdrawMarker ? fmtCurrency(markerAmount) : fmtCurrency(g.betAmount || 0)}
+                          </td>
+                          <td className="px-2 py-2 text-right font-mono">
+                            {isDepositMarker || isForfeitMarker || isWithdrawMarker ? "-" : fmtCurrency(g.payout || 0)}
+                          </td>
+                          <td className={`px-2 py-2 text-right font-mono ${
+                            isForfeitMarker || isWithdrawMarker ? "text-rose-400" : wl >= 0 ? "text-emerald-400" : "text-red-400"
+                          }`}>
+                            {isDepositMarker ? "-" : isForfeitMarker || isWithdrawMarker ? `-${markerAmount.toFixed(2)}` : `${wl >= 0 ? "+" : ""}${wl.toFixed(2)}`}
+                          </td>
+                          <td className="px-2 py-2 text-right font-mono">
+                            {fmtCurrency(g.balanceAfter || 0)}
+                          </td>
+                          <td className="px-2 py-2 truncate max-w-[160px]">{g.eventRef || g.providerTranId || "-"}</td>
+                        </tr>
+                      );
+                    })}
+                    {middlewaveGameLogs.length === 0 && (
+                      <tr>
+                        <td className="px-2 py-4 text-center text-muted-foreground" colSpan={8}>
+                          {middlewaveLogsQuery.isLoading ? "Loading..." : "No Middlewave game logs found"}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-muted-foreground">
+                  Page {logPage} / {middlewaveTotalPages} · {middlewaveTotal} records
+                </p>
+                <div className="flex gap-1">
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    disabled={logPage <= 1 || middlewaveLogsQuery.isFetching}
+                    onClick={() => setLogPage((p) => Math.max(1, p - 1))}
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    disabled={logPage >= middlewaveTotalPages || middlewaveLogsQuery.isFetching}
+                    onClick={() => setLogPage((p) => p + 1)}
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
         </TabsContent>
 
-        <TabsContent value="bonuses">
-          <div className="max-h-64 overflow-y-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Bonus</TableHead>
-                  <TableHead>Amount</TableHead>
-                  <TableHead>Rollover</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Claimed</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {data.bonusHistory?.map((b: any) => (
-                  <TableRow key={b.id}>
-                    <TableCell className="text-sm">{b.bonusName || `Bonus #${b.bonusConfigId}`}</TableCell>
-                    <TableCell className="font-bold">${sn(b.bonusAmount).toFixed(2)}</TableCell>
-                    <TableCell className="font-mono text-xs">{sn(b.currentRollover).toFixed(0)} / {sn(b.targetRollover).toFixed(0)}</TableCell>
-                    <TableCell>
-                      <span className={`status-badge ${b.status === "completed" ? "status-approved" : b.status === "active" ? "status-pending" : "status-rejected"}`}>{b.status}</span>
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{new Date(b.claimedAt).toLocaleString()}</TableCell>
-                  </TableRow>
-                ))}
-                {(!data.bonusHistory || data.bonusHistory.length === 0) && (
-                  <TableRow><TableCell colSpan={5} className="text-center py-4 text-muted-foreground">No bonus history</TableCell></TableRow>
+        <TabsContent value="invited" className="mt-0">
+          <div className="rounded-lg border border-white/10 bg-card/30 p-3 space-y-3">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <p className="text-xs text-muted-foreground">
+                由 <span className="font-mono text-foreground">#{p.id}</span>{" "}
+                {p.telegramFirstName || ""} 邀请注册的玩家（按注册时间倒序）
+              </p>
+              {invitedCount > 0 && (
+                <Badge variant="outline" className="font-mono text-xs">
+                  共 {invitedCount} 人
+                </Badge>
+              )}
+            </div>
+            {invitedListQuery.isLoading ? (
+              <div className="py-12 flex justify-center">
+                <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+              </div>
+            ) : (
+              <>
+                <div className="rounded-md border border-white/10 overflow-x-auto max-h-[min(420px,50vh)] overflow-y-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-14">ID</TableHead>
+                        <TableHead>姓名 / TG</TableHead>
+                        <TableHead>手机</TableHead>
+                        <TableHead>邀请码</TableHead>
+                        <TableHead>注册时间</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {invitedListRows.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={5} className="text-center text-muted-foreground py-10">
+                            暂无邀请记录
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        invitedListRows.map((ip: any) => (
+                          <TableRow key={ip.id}>
+                            <TableCell className="font-mono text-xs">{ip.id}</TableCell>
+                            <TableCell className="text-sm">
+                              <div className="font-medium truncate max-w-[140px]">
+                                {[ip.telegramFirstName, ip.telegramLastName].filter(Boolean).join(" ") || "—"}
+                              </div>
+                              <div className="text-[11px] text-muted-foreground truncate">@{ip.telegramUsername || "N/A"}</div>
+                            </TableCell>
+                            <TableCell className="font-mono text-xs">{ip.phone || "—"}</TableCell>
+                            <TableCell className="font-mono text-xs">{ip.inviteCode || "—"}</TableCell>
+                            <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                              {ip.createdAt ? new Date(ip.createdAt).toLocaleString() : "—"}
+                            </TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+                {invitedListTotal > 0 && (
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <p className="text-xs text-muted-foreground">
+                      第 {invitedListPage} / {invitedListTotalPages} 页 · 每页 {invitedListPageSize} 条
+                    </p>
+                    <div className="flex gap-1">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        className="h-8 w-8"
+                        disabled={invitedListPage <= 1 || invitedListQuery.isFetching}
+                        onClick={() => setInvitedListPage((x) => Math.max(1, x - 1))}
+                      >
+                        <ChevronLeft className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        className="h-8 w-8"
+                        disabled={invitedListPage >= invitedListTotalPages || invitedListQuery.isFetching}
+                        onClick={() => setInvitedListPage((x) => x + 1)}
+                      >
+                        <ChevronRight className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </div>
                 )}
-              </TableBody>
-            </Table>
+              </>
+            )}
           </div>
         </TabsContent>
       </Tabs>

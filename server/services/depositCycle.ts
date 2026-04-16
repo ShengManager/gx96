@@ -1,5 +1,5 @@
 import { eq, and, desc } from "drizzle-orm";
-import { getDb } from "../db";
+import { getDb, getFinanceLimits, getSetting } from "../db";
 import {
   deposits,
   withdrawals,
@@ -85,6 +85,14 @@ export async function createDeposit(params: {
     return { success: false, error: canDeposit.reason };
   }
 
+  const limits = await getFinanceLimits(params.adminId);
+  if (limits.minDeposit !== undefined && params.amount + 1e-9 < limits.minDeposit) {
+    return { success: false, error: `Deposit amount must be at least ${limits.minDeposit.toFixed(2)}` };
+  }
+  if (limits.maxDeposit !== undefined && limits.maxDeposit > 0 && params.amount > limits.maxDeposit + 1e-9) {
+    return { success: false, error: `Deposit amount cannot exceed ${limits.maxDeposit.toFixed(2)}` };
+  }
+
   const db = await getDb();
   if (!db) return { success: false, error: "Database unavailable" };
 
@@ -125,6 +133,16 @@ export async function approveDeposit(
     return { success: false, error: `Cannot approve deposit with status: ${deposit.status}` };
   }
 
+  // Apply default rollover/turnover settings for new cycle
+  const rolloverMultiplierRaw = await getSetting(deposit.adminId, "default_rollover_multiplier");
+  const turnoverTargetRaw = await getSetting(deposit.adminId, "default_turnover_target");
+  const rolloverMultiplier = Math.max(0, parseFloat(rolloverMultiplierRaw || "0") || 0);
+  const defaultTurnoverMultiplier = Math.max(0, parseFloat(turnoverTargetRaw || "0") || 0);
+  const financeLimits = await getFinanceLimits(deposit.adminId);
+  const depositAmountNum = Math.max(0, parseFloat(deposit.amount || "0") || 0);
+  const targetRollover = depositAmountNum * rolloverMultiplier;
+  const targetTurnover = depositAmountNum * defaultTurnoverMultiplier;
+
   // Create a new deposit cycle
   const cycleResult = await db.insert(depositCycles).values({
     playerId: deposit.playerId,
@@ -134,10 +152,14 @@ export async function approveDeposit(
     bonusAmount: "0",
     totalWithdrawn: "0",
     hasEnteredGame: false,
-    targetRollover: "0",
+    targetRollover: targetRollover.toFixed(4),
     currentRollover: "0",
-    targetTurnover: "0",
+    targetTurnover: targetTurnover.toFixed(4),
     currentTurnover: "0",
+    rolloverMultiplierSnapshot: rolloverMultiplier.toFixed(4),
+    turnoverMultiplierSnapshot: defaultTurnoverMultiplier.toFixed(4),
+    minWithdrawSnapshot: financeLimits.minWithdraw?.toFixed(4) ?? null,
+    maxWithdrawSnapshot: financeLimits.maxWithdraw?.toFixed(4) ?? null,
   });
 
   const cycleId = cycleResult[0].insertId;
@@ -206,12 +228,121 @@ export async function handleDeposit(
   return { success: true };
 }
 
+async function syncActiveCycleProgressFromMiddlewave(params: {
+  playerId: number;
+  adminId: number;
+  cycleId: number;
+  cycleCreatedAt: Date;
+}) {
+  const db = await getDb();
+  if (!db) return null;
+
+  const playerRows = await db
+    .select({
+      id: players.id,
+      middlewavePlayerId: players.middlewavePlayerId,
+    })
+    .from(players)
+    .where(eq(players.id, params.playerId))
+    .limit(1);
+
+  if (playerRows.length === 0) return null;
+  const player = playerRows[0];
+
+  const { getMiddlewaveConfig, queryGameLogs } = await import("./middlewave");
+  const config = await getMiddlewaveConfig(params.adminId);
+  if (!config) return null;
+
+  const playerIdentityCandidates = [
+    player.middlewavePlayerId || "",
+    String(player.id),
+  ].filter(Boolean);
+
+  let logs: any[] = [];
+  for (const identity of playerIdentityCandidates) {
+    try {
+      let page = 1;
+      let totalPages = 1;
+      const pageSize = 100;
+      const collected: any[] = [];
+      do {
+        const res = await queryGameLogs(config, {
+          playerId: identity,
+          startDate: new Date(params.cycleCreatedAt).toISOString(),
+          page,
+          pageSize,
+        });
+        if (!res.success) break;
+        if (Array.isArray(res.logs)) collected.push(...res.logs);
+        const total = Math.max(0, Number(res.total || 0));
+        totalPages = total > 0 ? Math.max(1, Math.ceil(total / pageSize)) : 1;
+        page += 1;
+      } while (page <= totalPages && page <= 10);
+
+      if (collected.length > 0) {
+        logs = collected;
+        break;
+      }
+    } catch {
+      // Ignore upstream errors here; we will keep existing cycle progress.
+    }
+  }
+
+  if (logs.length === 0) return null;
+
+  const seen = new Set<string>();
+  const dedupedLogs = logs.filter((log: any) => {
+    const key = [
+      String(log.providerTranId || ""),
+      String(log.transactionDate || ""),
+      String(log.gameCode || ""),
+      String(log.betAmount || ""),
+      String(log.winLose || ""),
+    ].join("|");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  let rollover = 0;
+  let turnover = 0;
+  for (const row of dedupedLogs) {
+    const validBet = Math.max(0, Number(row.validBet || 0));
+    const positiveWinLose = Math.max(0, Number(row.winLose || 0));
+    rollover += validBet;
+    turnover += positiveWinLose;
+  }
+
+  await db
+    .update(depositCycles)
+    .set({
+      currentRollover: rollover.toFixed(4),
+      currentTurnover: turnover.toFixed(4),
+      hasEnteredGame: true,
+    })
+    .where(eq(depositCycles.id, params.cycleId));
+
+  return { currentRollover: rollover, currentTurnover: turnover };
+}
+
 // ─── Check withdrawal conditions ───
 export async function checkWithdrawalConditions(playerId: number): Promise<{
   canWithdraw: boolean;
   reason?: string;
+  hasEnteredGame?: boolean;
+  rolloverMet?: boolean;
+  turnoverMet?: boolean;
   rolloverProgress?: { current: number; target: number; percentage: number };
   turnoverProgress?: { current: number; target: number; percentage: number };
+  rolloverMode?: "multiplier";
+  turnoverMode?: "multiplier";
+  rolloverMultiplier?: number;
+  turnoverMultiplier?: number;
+  turnoverConfiguredTarget?: number;
+  walletBalance?: number;
+  maxWithdrawable?: number;
+  minWithdraw?: number;
+  maxWithdrawSetting?: number;
 }> {
   const db = await getDb();
   if (!db) return { canWithdraw: false, reason: "Database unavailable" };
@@ -227,10 +358,103 @@ export async function checkWithdrawalConditions(playerId: number): Promise<{
   }
 
   const cycle = cycles[0];
-  const targetRollover = parseFloat(cycle.targetRollover);
-  const currentRollover = parseFloat(cycle.currentRollover);
-  const targetTurnover = parseFloat(cycle.targetTurnover);
-  const currentTurnover = parseFloat(cycle.currentTurnover);
+  const globalLimits = await getFinanceLimits(cycle.adminId);
+  const baseAmountForRatio = Math.max(0, parseFloat(cycle.depositAmount || "0") + parseFloat(cycle.bonusAmount || "0"));
+  const cycleTargetRolloverRaw = Math.max(0, parseFloat(cycle.targetRollover || "0"));
+  const cycleTargetTurnoverRaw = Math.max(0, parseFloat(cycle.targetTurnover || "0"));
+  const derivedRolloverMultiplier = baseAmountForRatio > 0 ? (cycleTargetRolloverRaw / baseAmountForRatio) : 0;
+  const derivedTurnoverMultiplier = baseAmountForRatio > 0 ? (cycleTargetTurnoverRaw / baseAmountForRatio) : 0;
+  if (
+    cycle.minWithdrawSnapshot == null ||
+    cycle.maxWithdrawSnapshot == null ||
+    cycle.rolloverMultiplierSnapshot == null ||
+    cycle.turnoverMultiplierSnapshot == null
+  ) {
+    await db
+      .update(depositCycles)
+      .set({
+        minWithdrawSnapshot: cycle.minWithdrawSnapshot ?? (globalLimits.minWithdraw?.toFixed(4) ?? null),
+        maxWithdrawSnapshot: cycle.maxWithdrawSnapshot ?? (globalLimits.maxWithdraw?.toFixed(4) ?? null),
+        rolloverMultiplierSnapshot: cycle.rolloverMultiplierSnapshot ?? derivedRolloverMultiplier.toFixed(4),
+        turnoverMultiplierSnapshot: cycle.turnoverMultiplierSnapshot ?? derivedTurnoverMultiplier.toFixed(4),
+      })
+      .where(eq(depositCycles.id, cycle.id));
+  }
+  const cycleRolloverMultiplier = cycle.rolloverMultiplierSnapshot != null
+    ? Math.max(0, parseFloat(String(cycle.rolloverMultiplierSnapshot)) || 0)
+    : derivedRolloverMultiplier;
+  const cycleTurnoverMultiplier = cycle.turnoverMultiplierSnapshot != null
+    ? Math.max(0, parseFloat(String(cycle.turnoverMultiplierSnapshot)) || 0)
+    : derivedTurnoverMultiplier;
+
+  const localWalletBalance = Math.max(
+    0,
+    parseFloat(cycle.depositAmount || "0") +
+      parseFloat(cycle.bonusAmount || "0") -
+      parseFloat(cycle.totalWithdrawn || "0")
+  );
+
+  // Freeze rules by cycle snapshot: settings changes after this deposit should not affect this active cycle.
+  const cycleMinWithdraw = cycle.minWithdrawSnapshot != null
+    ? Math.max(0, parseFloat(String(cycle.minWithdrawSnapshot)) || 0)
+    : globalLimits.minWithdraw;
+  const cycleMaxWithdraw = cycle.maxWithdrawSnapshot != null
+    ? Math.max(0, parseFloat(String(cycle.maxWithdrawSnapshot)) || 0)
+    : globalLimits.maxWithdraw;
+
+  // Effective withdrawable should follow real-time provider credits when available.
+  let providerTotal = 0;
+  try {
+    const playerRows = await db
+      .select({ middlewavePlayerId: players.middlewavePlayerId })
+      .from(players)
+      .where(eq(players.id, playerId))
+      .limit(1);
+    const middlewavePlayerId = String(playerRows[0]?.middlewavePlayerId || "").trim();
+    const identity = middlewavePlayerId || String(playerId);
+    if (identity) {
+      const { getMiddlewaveConfig, checkAllProviderBalances } = await import("./middlewave");
+      const cfg = await getMiddlewaveConfig(cycle.adminId);
+      if (cfg) {
+        const balances = await checkAllProviderBalances(cfg, identity);
+        providerTotal = balances.reduce((sum, b) => sum + Math.max(0, Number(b.balance) || 0), 0);
+      }
+    }
+  } catch {
+    // Ignore provider probe failures and fall back to local cycle balance.
+  }
+  const walletBalance = providerTotal > 0 ? providerTotal : localWalletBalance;
+  const maxWithdrawable = walletBalance;
+
+  const syncedProgress = await syncActiveCycleProgressFromMiddlewave({
+    playerId,
+    adminId: cycle.adminId,
+    cycleId: cycle.id,
+    cycleCreatedAt: cycle.createdAt,
+  });
+
+  const cycleTargetRollover = parseFloat(cycle.targetRollover);
+  const currentRollover = syncedProgress?.currentRollover ?? parseFloat(cycle.currentRollover);
+  const cycleTargetTurnover = parseFloat(cycle.targetTurnover);
+  const currentTurnover = syncedProgress?.currentTurnover ?? parseFloat(cycle.currentTurnover);
+  // IMPORTANT: lock to this cycle's own snapshot rules (do not read live settings).
+  // If historical rows have target=0, recover by snapshot multiplier.
+  const targetRollover = cycleTargetRollover > 0
+    ? cycleTargetRollover
+    : Math.max(0, baseAmountForRatio * cycleRolloverMultiplier);
+  const targetTurnover = cycleTargetTurnover > 0
+    ? cycleTargetTurnover
+    : Math.max(0, baseAmountForRatio * cycleTurnoverMultiplier);
+
+  if ((cycleTargetRollover <= 0 && targetRollover > 0) || (cycleTargetTurnover <= 0 && targetTurnover > 0)) {
+    await db
+      .update(depositCycles)
+      .set({
+        targetRollover: targetRollover.toFixed(4),
+        targetTurnover: targetTurnover.toFixed(4),
+      })
+      .where(eq(depositCycles.id, cycle.id));
+  }
 
   const rolloverMet = targetRollover <= 0 || currentRollover >= targetRollover;
   const turnoverMet = targetTurnover <= 0 || currentTurnover >= targetTurnover;
@@ -238,21 +462,56 @@ export async function checkWithdrawalConditions(playerId: number): Promise<{
   const rolloverProgress = {
     current: currentRollover,
     target: targetRollover,
-    percentage: targetRollover > 0 ? Math.min(100, (currentRollover / targetRollover) * 100) : 100,
+    percentage:
+      targetRollover > 0
+        ? Math.min(100, (currentRollover / targetRollover) * 100)
+        : cycle.hasEnteredGame
+          ? 100
+          : 0,
   };
 
   const turnoverProgress = {
     current: currentTurnover,
     target: targetTurnover,
-    percentage: targetTurnover > 0 ? Math.min(100, (currentTurnover / targetTurnover) * 100) : 100,
+    percentage:
+      targetTurnover > 0
+        ? Math.min(100, (currentTurnover / targetTurnover) * 100)
+        : cycle.hasEnteredGame
+          ? 100
+          : 0,
   };
+
+  const baseExtra = {
+    hasEnteredGame: cycle.hasEnteredGame || !!syncedProgress,
+    rolloverMet,
+    turnoverMet,
+    rolloverProgress,
+    turnoverProgress,
+    rolloverMode: "multiplier" as const,
+    turnoverMode: "multiplier" as const,
+    rolloverMultiplier: cycleRolloverMultiplier,
+    turnoverMultiplier: cycleTurnoverMultiplier,
+    turnoverConfiguredTarget: cycleTurnoverMultiplier,
+    walletBalance,
+    maxWithdrawable,
+    minWithdraw: cycleMinWithdraw,
+    maxWithdrawSetting: cycleMaxWithdraw,
+  };
+
+  const hasEnteredGame = cycle.hasEnteredGame || !!syncedProgress;
+  if (!hasEnteredGame) {
+    return {
+      canWithdraw: false,
+      reason: "Please enter a game first before withdrawal",
+      ...baseExtra,
+    };
+  }
 
   if (!rolloverMet) {
     return {
       canWithdraw: false,
       reason: `Rollover not met: ${currentRollover.toFixed(2)} / ${targetRollover.toFixed(2)}`,
-      rolloverProgress,
-      turnoverProgress,
+      ...baseExtra,
     };
   }
 
@@ -260,12 +519,27 @@ export async function checkWithdrawalConditions(playerId: number): Promise<{
     return {
       canWithdraw: false,
       reason: `Turnover not met: ${currentTurnover.toFixed(2)} / ${targetTurnover.toFixed(2)}`,
-      rolloverProgress,
-      turnoverProgress,
+      ...baseExtra,
     };
   }
 
-  return { canWithdraw: true, rolloverProgress, turnoverProgress };
+  if (cycleMinWithdraw !== undefined && walletBalance + 1e-9 < cycleMinWithdraw) {
+    return {
+      canWithdraw: false,
+      reason: `Minimum withdrawal is ${cycleMinWithdraw.toFixed(2)} (your wallet balance is ${walletBalance.toFixed(2)})`,
+      ...baseExtra,
+    };
+  }
+
+  if (maxWithdrawable <= 0.0001) {
+    return {
+      canWithdraw: false,
+      reason: "No withdrawable balance",
+      ...baseExtra,
+    };
+  }
+
+  return { canWithdraw: true, ...baseExtra };
 }
 
 // ─── Create a withdrawal ───
@@ -278,6 +552,17 @@ export async function createWithdrawal(params: {
   const conditions = await checkWithdrawalConditions(params.playerId);
   if (!conditions.canWithdraw) {
     return { success: false, error: conditions.reason };
+  }
+
+  if (conditions.minWithdraw !== undefined && params.amount + 1e-9 < conditions.minWithdraw) {
+    return { success: false, error: `Withdrawal amount must be at least ${conditions.minWithdraw.toFixed(2)}` };
+  }
+  const maxW = conditions.maxWithdrawable ?? 0;
+  if (params.amount > maxW + 1e-9) {
+    return {
+      success: false,
+      error: `Amount exceeds maximum withdrawable (${maxW.toFixed(2)})`,
+    };
   }
 
   const db = await getDb();

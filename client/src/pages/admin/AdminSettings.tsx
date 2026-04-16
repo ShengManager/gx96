@@ -115,19 +115,25 @@ function SystemSettings({ accessToken, canEdit }: { accessToken: string; canEdit
     }
   }, [settingsQuery.data]);
 
-  const SETTINGS_KEYS = [
-    { key: "middlewave_token", label: "Middlewave API Token", type: "password" },
-    { key: "middlewave_prefix", label: "Middlewave Player Prefix", type: "text" },
-    { key: "default_language", label: "Default Language (en/zh)", type: "text" },
-    { key: "min_deposit", label: "Min Deposit Amount", type: "number" },
-    { key: "max_deposit", label: "Max Deposit Amount", type: "number" },
-    { key: "min_withdraw", label: "Min Withdraw Amount", type: "number" },
-    { key: "max_withdraw", label: "Max Withdraw Amount", type: "number" },
-    { key: "default_rollover_multiplier", label: "Default Rollover Multiplier", type: "number" },
-    { key: "default_turnover_target", label: "Default Turnover Target", type: "number" },
-    { key: "site_name", label: "Site Name", type: "text" },
-    { key: "support_link", label: "Support Link", type: "text" },
-  ];
+  const SETTINGS_KEYS: Array<{
+    key: string;
+    label: string;
+    type: "text" | "number" | "password";
+    placeholder?: string;
+    help?: string;
+  }> = [
+      { key: "middlewave_token", label: "Middlewave API Token", type: "password", placeholder: "Project token", help: "Used for GameList, LoginGame, CheckBalance and transfers." },
+      { key: "middlewave_prefix", label: "Middlewave Player Prefix", type: "text", placeholder: "e.g. gx", help: "Optional prefix for provider player IDs." },
+      { key: "default_language", label: "Default Language (en/zh)", type: "text", placeholder: "en", help: "Default UI language for players." },
+      { key: "min_deposit", label: "Min Deposit Amount", type: "number", placeholder: "10", help: "Player deposit must be >= this amount." },
+      { key: "max_deposit", label: "Max Deposit Amount", type: "number", placeholder: "1000", help: "Player deposit must be <= this amount. Leave empty/0 to disable cap." },
+      { key: "min_withdraw", label: "Min Withdraw Amount", type: "number", placeholder: "10", help: "Single withdrawal must be >= this amount." },
+      { key: "max_withdraw", label: "Max Withdraw Amount", type: "number", placeholder: "1000", help: "Single withdrawal cap. Effective max is min(wallet, this setting)." },
+      { key: "default_rollover_multiplier", label: "Default Rollover Multiplier", type: "number", placeholder: "5", help: "Multiplier mode. Target formula: (Deposit + Bonus) x Multiplier." },
+      { key: "default_turnover_target", label: "Default Turnover Multiplier", type: "number", placeholder: "5", help: "Multiplier mode. Target formula: (Deposit + Bonus) x Multiplier." },
+      { key: "site_name", label: "Site Name", type: "text", placeholder: "MegaH5", help: "Displayed in player frontend header/title." },
+      { key: "support_link", label: "Support Link", type: "text", placeholder: "https://t.me/your_support", help: "Player support URL." },
+    ];
 
   if (settingsQuery.isLoading) return <Card><CardContent className="p-8 text-center text-muted-foreground">Loading settings...</CardContent></Card>;
 
@@ -138,6 +144,12 @@ function SystemSettings({ accessToken, canEdit }: { accessToken: string; canEdit
         <CardDescription>Core platform settings including Middlewave integration</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        <div className="rounded-md border border-primary/25 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
+          <p><strong>Withdrawal Rules:</strong> Rollover uses <strong>multiplier mode</strong>; Turnover uses <strong>multiplier mode</strong>.</p>
+          <p>Rollover target = (Deposit + Bonus) x Default Rollover Multiplier</p>
+          <p>Turnover target = (Deposit + Bonus) x Default Turnover Multiplier</p>
+          <p>Rule changes apply to new deposits only. Existing active cycles keep their original rules until cleared.</p>
+        </div>
         {/* Timezone selector */}
         <div className="grid grid-cols-3 gap-4 items-center">
           <Label className="text-right text-sm flex items-center justify-end gap-1"><Clock className="w-4 h-4" /> Display Timezone</Label>
@@ -154,15 +166,20 @@ function SystemSettings({ accessToken, canEdit }: { accessToken: string; canEdit
         </div>
 
         {SETTINGS_KEYS.map(sk => (
-          <div key={sk.key} className="grid grid-cols-3 gap-4 items-center">
-            <Label className="text-right text-sm">{sk.label}</Label>
-            <Input
-              type={sk.type}
-              value={form[sk.key] || ""}
-              onChange={e => setForm(f => ({ ...f, [sk.key]: e.target.value }))}
-              disabled={!canEdit}
-              className="col-span-2"
-            />
+          <div key={sk.key} className="grid grid-cols-3 gap-4 items-start">
+            <Label className="text-right text-sm pt-2">{sk.label}</Label>
+            <div className="col-span-2 space-y-1">
+              <Input
+                type={sk.type}
+                value={form[sk.key] || ""}
+                onChange={e => setForm(f => ({ ...f, [sk.key]: e.target.value }))}
+                placeholder={sk.placeholder}
+                disabled={!canEdit}
+              />
+              {!!sk.help && (
+                <p className="text-xs text-muted-foreground">{sk.help}</p>
+              )}
+            </div>
           </div>
         ))}
         {canEdit && (

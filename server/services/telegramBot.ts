@@ -25,6 +25,7 @@ import {
 import { eq, and } from "drizzle-orm";
 import { hashPassword, generateAutoLoginToken } from "./auth";
 import { nanoid } from "nanoid";
+import { generateMiddlewavePlayerId } from "./playerId";
 import {
   canCreateDeposit,
   createDeposit,
@@ -427,6 +428,7 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         playerId: 0, // will be set after registration
         phone,
         firstName: msg.from?.first_name || "",
+        lastName: msg.from?.last_name || "",
         username: msg.from?.username || "",
         inviteCode: pendingInvite || undefined,
       });
@@ -454,15 +456,20 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
           telegramId,
           phone,
           msg.from?.first_name || "",
+          msg.from?.last_name || "",
           msg.from?.username || "",
           pendingInvite || undefined
         );
 
+        const displayWelcome =
+          [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(" ").trim() ||
+          msg.from?.first_name ||
+          "Player";
         await sendAndTrack(
           bot,
           chatId,
           `✅ <b>Registration Successful!</b>\n\n` +
-            `Welcome, ${msg.from?.first_name || "Player"}!\n` +
+            `Welcome, ${displayWelcome}!\n` +
             `Your username: <code>${player.username}</code>\n` +
             `Your invite code: <code>${player.inviteCode}</code>\n\n` +
             `Share your invite code with friends!`,
@@ -530,6 +537,7 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
           telegramId,
           pending.phone,
           pending.firstName,
+          pending.lastName,
           pending.username,
           pending.inviteCode
         );
@@ -546,11 +554,15 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
 
         pendingBankSelection.delete(chatId);
 
+        const welcomeName =
+          [pending.firstName, pending.lastName].filter(Boolean).join(" ").trim() ||
+          pending.firstName ||
+          "Player";
         await sendAndTrack(
           bot,
           chatId,
           `✅ <b>Registration Successful!</b>\n\n` +
-            `Welcome, ${pending.firstName || "Player"}!\n` +
+            `Welcome, ${welcomeName}!\n` +
             `Your username: <code>${player.username}</code>\n` +
             (selectedBank ? `Bank: ${selectedBank}\n` : "") +
             `Your invite code: <code>${player.inviteCode}</code>\n\n` +
@@ -1019,7 +1031,17 @@ async function showMainMenu(
 // ─── Pending state maps ───
 
 const pendingRegistrations = new Map<number, string>(); // chatId -> inviteCode
-const pendingBankSelection = new Map<number, { playerId: number; phone: string; firstName: string; username: string; inviteCode?: string }>(); // chatId -> pending registration data waiting for bank selection
+const pendingBankSelection = new Map<
+  number,
+  {
+    playerId: number;
+    phone: string;
+    firstName: string;
+    lastName: string;
+    username: string;
+    inviteCode?: string;
+  }
+>(); // chatId -> pending registration data waiting for bank selection
 const pendingDeposits = new Map<
   number,
   { bankId: number; playerId: number; adminId: number }
@@ -1079,6 +1101,7 @@ async function registerPlayerFromTelegram(
   telegramId: string,
   phone: string,
   firstName: string,
+  lastName: string,
   tgUsername: string,
   inviteCode?: string
 ): Promise<any> {
@@ -1089,6 +1112,7 @@ async function registerPlayerFromTelegram(
   const username = tgUsername || `tg_${telegramId.slice(-6)}`;
   const invCode = nanoid(8).toUpperCase();
   const passwordHash = await hashPassword(nanoid(12)); // Random password for TG users
+  const middlewavePlayerId = generateMiddlewavePlayerId(adminId, username || telegramId);
 
   // Check invite code
   let referrerId: number | null = null;
@@ -1101,16 +1125,21 @@ async function registerPlayerFromTelegram(
     if (referrer.length > 0) referrerId = referrer[0].id;
   }
 
+  const displayName =
+    [firstName, lastName].filter(Boolean).join(" ").trim() || firstName || "";
+
   const [result] = await database.insert(players).values({
     adminId,
     telegramId,
     telegramUsername: tgUsername || null,
     telegramFirstName: firstName || null,
+    telegramLastName: lastName?.trim() ? lastName.trim() : null,
     phone: phone || null,
     inviteCode: invCode,
     invitedBy: referrerId,
     isActive: true,
     lang: "en",
+    middlewavePlayerId,
   }).$returningId();
 
   // If there's a referrer, create invite relation
@@ -1129,7 +1158,7 @@ async function registerPlayerFromTelegram(
     adminId,
     username,
     phone,
-    displayName: firstName,
+    displayName,
     telegramId,
     inviteCode: invCode,
     balance: "0",

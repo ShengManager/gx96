@@ -18,7 +18,7 @@ export default function PlayerWithdraw() {
 
   const checkQuery = trpc.player.withdrawalCheck.useQuery(
     { token: accessToken || "" },
-    { enabled: !!accessToken }
+    { enabled: !!accessToken, refetchInterval: 15000, refetchOnWindowFocus: true }
   );
 
   const createMutation = trpc.player.createWithdrawal.useMutation({
@@ -50,11 +50,19 @@ export default function PlayerWithdraw() {
   }
 
   const checkData = checkQuery.data as any;
-  const canWithdraw = checkData?.canWithdraw !== false;
-  const rolloverPct = checkData?.rolloverProgress !== undefined
-    ? Math.min(100, checkData.rolloverProgress * 100) : null;
-  const turnoverPct = checkData?.turnoverProgress !== undefined
-    ? Math.min(100, checkData.turnoverProgress * 100) : null;
+  const canWithdraw = checkData?.canWithdraw === true;
+  const rolloverPct = checkData?.rolloverProgress?.percentage !== undefined
+    ? Math.min(100, Number(checkData.rolloverProgress.percentage))
+    : null;
+  const turnoverPct = checkData?.turnoverProgress?.percentage !== undefined
+    ? Math.min(100, Number(checkData.turnoverProgress.percentage))
+    : null;
+  const rolloverCurrent = Number(checkData?.rolloverProgress?.current || 0);
+  const rolloverTarget = Number(checkData?.rolloverProgress?.target || 0);
+  const turnoverCurrent = Number(checkData?.turnoverProgress?.current || 0);
+  const turnoverTarget = Number(checkData?.turnoverProgress?.target || 0);
+  const rolloverRemaining = Math.max(0, rolloverTarget - rolloverCurrent);
+  const turnoverRemaining = Math.max(0, turnoverTarget - turnoverCurrent);
 
   return (
     <div className="space-y-4 px-4 pt-4 pb-4">
@@ -68,6 +76,9 @@ export default function PlayerWithdraw() {
               <Shield className="w-4 h-4 text-primary" />
               <p className="font-semibold text-sm">Withdrawal Conditions</p>
             </div>
+            <p className="text-[11px] text-muted-foreground">
+              Rollover = multiplier mode ({Number(checkData?.rolloverMultiplier || 0).toFixed(2)}x). Turnover = multiplier mode ({Number((checkData?.turnoverMultiplier ?? checkData?.turnoverConfiguredTarget) || 0).toFixed(2)}x, cumulative positive win/lose only).
+            </p>
 
             {rolloverPct !== null && (
               <div>
@@ -85,6 +96,10 @@ export default function PlayerWithdraw() {
                     <CheckCircle className="w-4 h-4 text-green-500 absolute right-0 top-1/2 -translate-y-1/2 translate-x-5" />
                   )}
                 </div>
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Current: {rolloverCurrent.toFixed(2)} / Target: {rolloverTarget.toFixed(2)} ·
+                  {" "}Remaining: {rolloverRemaining.toFixed(2)}
+                </p>
               </div>
             )}
 
@@ -104,14 +119,23 @@ export default function PlayerWithdraw() {
                     <CheckCircle className="w-4 h-4 text-green-500 absolute right-0 top-1/2 -translate-y-1/2 translate-x-5" />
                   )}
                 </div>
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Current: {turnoverCurrent.toFixed(2)} / Target: {turnoverTarget.toFixed(2)} ·
+                  {" "}Remaining: {turnoverRemaining.toFixed(2)}
+                </p>
               </div>
             )}
 
             {checkData.maxWithdrawable !== undefined && (
               <div className="flex items-center justify-between p-3 rounded-xl bg-muted/50">
                 <span className="text-sm text-muted-foreground">Max Withdrawable</span>
-                <span className="text-lg font-bold">MYR {parseFloat(checkData.maxWithdrawable).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                <span className="text-lg font-bold">MYR {parseFloat(String(checkData.maxWithdrawable)).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
               </div>
+            )}
+            {checkData.minWithdraw !== undefined && checkData.minWithdraw > 0 && (
+              <p className="text-[11px] text-muted-foreground">
+                Min per request: MYR {parseFloat(String(checkData.minWithdraw)).toFixed(2)} (from settings)
+              </p>
             )}
           </CardContent>
         </Card>
@@ -155,7 +179,13 @@ export default function PlayerWithdraw() {
             />
           </div>
 
-          {checkData?.maxWithdrawable && amount && parseFloat(amount) > parseFloat(checkData.maxWithdrawable) && (
+          {checkData?.minWithdraw !== undefined && amount && parseFloat(amount) > 0 && parseFloat(amount) + 1e-9 < parseFloat(String(checkData.minWithdraw)) && (
+            <p className="text-xs text-red-500 flex items-center gap-1">
+              <AlertCircle className="w-3 h-3" />
+              Amount is below minimum withdrawal
+            </p>
+          )}
+          {checkData?.maxWithdrawable !== undefined && amount && parseFloat(amount) > parseFloat(String(checkData.maxWithdrawable)) + 1e-9 && (
             <p className="text-xs text-red-500 flex items-center gap-1">
               <AlertCircle className="w-3 h-3" />
               Amount exceeds maximum withdrawable
@@ -166,7 +196,11 @@ export default function PlayerWithdraw() {
             className="w-full h-12 rounded-xl text-base"
             style={{ background: canWithdraw ? "linear-gradient(135deg, #f97316 0%, #ea580c 100%)" : undefined }}
             variant={canWithdraw ? "default" : "secondary"}
-            disabled={!amount || parseFloat(amount) <= 0 || createMutation.isPending || !canWithdraw}
+            disabled={
+              !amount || parseFloat(amount) <= 0 || createMutation.isPending || !canWithdraw ||
+              (checkData?.minWithdraw !== undefined && parseFloat(amount) + 1e-9 < parseFloat(String(checkData.minWithdraw))) ||
+              (checkData?.maxWithdrawable !== undefined && parseFloat(amount) > parseFloat(String(checkData.maxWithdrawable)) + 1e-9)
+            }
             onClick={() => createMutation.mutate({ token: accessToken!, amount: parseFloat(amount) })}
           >
             {createMutation.isPending ? (

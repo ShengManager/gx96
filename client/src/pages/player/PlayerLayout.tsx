@@ -77,7 +77,7 @@ export default function PlayerLayout({ children }: { children: ReactNode }) {
       </header>
 
       {/* Main content */}
-      <main className="flex-1 pb-24">
+      <main className="flex-1 pb-24 w-full max-w-[1280px] mx-auto">
         {children}
       </main>
 

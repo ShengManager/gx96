@@ -14,6 +14,7 @@ import { getDb, getAdminById, getPermissions, createAdminLog, getDomainAcl } fro
 import { adminAccounts, subAccountPermissions, players } from "../../drizzle/schema";
 import { eq, and } from "drizzle-orm";
 import { nanoid } from "nanoid";
+import { generateMiddlewavePlayerId } from "../services/playerId";
 
 export const adminAuthRouter = router({
   // Admin login
@@ -312,6 +313,7 @@ export const adminAuthRouter = router({
 
       const passwordHash = await hashPassword(input.password);
       const invCode = nanoid(8).toUpperCase();
+      const middlewavePlayerId = generateMiddlewavePlayerId(adminId, input.username);
 
       const [result] = await db.insert(players).values({
         adminId,
@@ -324,6 +326,7 @@ export const adminAuthRouter = router({
         invitedBy: referrerId,
         isActive: true,
         lang: "en",
+        middlewavePlayerId,
       }).$returningId();
 
       const tokens = await playerLogin(result.id, adminId);

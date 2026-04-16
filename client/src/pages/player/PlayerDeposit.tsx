@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-const QUICK_AMOUNTS = [50, 100, 200, 500, 1000, 2000];
+const DEFAULT_QUICK_AMOUNTS = [50, 100, 200, 500, 1000, 2000];
 
 export default function PlayerDeposit() {
   const { accessToken, isAuthenticated, refreshBalance } = usePlayerAuth();
@@ -42,6 +42,9 @@ export default function PlayerDeposit() {
     { enabled: !!accessToken }
   );
 
+  /** Backend returns `allowed`; keep both names for safety */
+  const depositAllowed = (checkQuery.data as any)?.allowed === true;
+
   if (!isAuthenticated) {
     return (
       <div className="flex flex-col items-center justify-center py-20 px-4 text-center">
@@ -58,6 +61,32 @@ export default function PlayerDeposit() {
   const checkData = checkQuery.data as any;
   const banks = checkData?.banks || [];
 
+  const minDeposit = checkData?.minDeposit !== undefined && checkData?.minDeposit !== null
+    ? Number(checkData.minDeposit)
+    : undefined;
+  const maxDeposit = checkData?.maxDeposit !== undefined && checkData?.maxDeposit !== null
+    ? Number(checkData.maxDeposit)
+    : undefined;
+
+  const presetRows = Array.isArray(checkData?.presets) ? checkData.presets : [];
+  const fromPresets = presetRows
+    .map((p: { amount?: string }) => parseFloat(String(p.amount ?? "")))
+    .filter((n: number) => Number.isFinite(n) && n > 0);
+
+  const quickAmounts = (fromPresets.length > 0 ? fromPresets : DEFAULT_QUICK_AMOUNTS).filter((a: number) => {
+    if (minDeposit !== undefined && a < minDeposit - 1e-9) return false;
+    if (maxDeposit !== undefined && maxDeposit > 0 && a > maxDeposit + 1e-9) return false;
+    return true;
+  });
+
+  const depositAmountValid = (raw: string): boolean => {
+    const n = parseFloat(raw);
+    if (!Number.isFinite(n) || n <= 0) return false;
+    if (minDeposit !== undefined && n < minDeposit - 1e-9) return false;
+    if (maxDeposit !== undefined && maxDeposit > 0 && n > maxDeposit + 1e-9) return false;
+    return true;
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -70,11 +99,24 @@ export default function PlayerDeposit() {
 
   const handleSubmit = async () => {
     if (!amount || !selectedBank) { toast.error("Please complete all steps"); return; }
+    if (!depositAmountValid(amount)) {
+      toast.error(
+        minDeposit !== undefined && maxDeposit !== undefined && maxDeposit > 0
+          ? `Amount must be between ${minDeposit.toFixed(2)} and ${maxDeposit.toFixed(2)}`
+          : minDeposit !== undefined
+            ? `Amount must be at least ${minDeposit.toFixed(2)}`
+            : maxDeposit !== undefined && maxDeposit > 0
+              ? `Amount cannot exceed ${maxDeposit.toFixed(2)}`
+              : "Invalid amount"
+      );
+      return;
+    }
 
     let receiptUrl: string | undefined;
     if (receiptFile) {
       const formData = new FormData();
       formData.append("file", receiptFile);
+      formData.append("category", "deposit");
       try {
         const res = await fetch("/api/upload", {
           method: "POST",
@@ -82,6 +124,10 @@ export default function PlayerDeposit() {
           body: formData,
         });
         const data = await res.json();
+        if (!res.ok) {
+          toast.error(typeof data.error === "string" ? data.error : "Failed to upload receipt");
+          return;
+        }
         receiptUrl = data.url;
       } catch {
         toast.error("Failed to upload receipt");
@@ -97,8 +143,17 @@ export default function PlayerDeposit() {
     });
   };
 
-  // Cannot deposit warning
-  if (checkData && !checkData.canDeposit) {
+  if (checkQuery.isLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 px-4">
+        <Loader2 className="w-8 h-8 animate-spin text-primary mb-3" />
+        <p className="text-sm text-muted-foreground">Checking deposit status…</p>
+      </div>
+    );
+  }
+
+  // Cannot deposit (backend: allowed === false)
+  if (checkData && !depositAllowed) {
     return (
       <div className="space-y-4 px-4 pt-4">
         <h2 className="text-xl font-bold">Deposit</h2>
@@ -145,8 +200,17 @@ export default function PlayerDeposit() {
               <p className="text-xs text-muted-foreground">Select or enter your deposit amount</p>
             </div>
 
+            {(minDeposit !== undefined || (maxDeposit !== undefined && maxDeposit > 0)) && (
+              <p className="text-[11px] text-center text-muted-foreground">
+                {minDeposit !== undefined && `Min MYR ${minDeposit.toFixed(2)}`}
+                {minDeposit !== undefined && maxDeposit !== undefined && maxDeposit > 0 ? " · " : ""}
+                {maxDeposit !== undefined && maxDeposit > 0 && `Max MYR ${maxDeposit.toFixed(2)}`}
+                <span className="block mt-0.5">(from admin settings)</span>
+              </p>
+            )}
+
             <div className="grid grid-cols-3 gap-2">
-              {QUICK_AMOUNTS.map(a => (
+              {quickAmounts.map((a: number) => (
                 <button
                   key={a}
                   onClick={() => setAmount(a.toString())}
@@ -172,10 +236,20 @@ export default function PlayerDeposit() {
               />
             </div>
 
+            {amount && !depositAmountValid(amount) && (
+              <p className="text-xs text-red-500 text-center">Amount does not meet min/max rules</p>
+            )}
+
             <Button
               className="w-full h-11 rounded-xl"
-              disabled={!amount || parseFloat(amount) <= 0}
-              onClick={() => setStep(2)}
+              disabled={!amount || !depositAmountValid(amount)}
+              onClick={() => {
+                if (!depositAmountValid(amount)) {
+                  toast.error("Please enter an amount within the allowed range");
+                  return;
+                }
+                setStep(2);
+              }}
             >
               Continue <ChevronRight className="w-4 h-4 ml-1" />
             </Button>

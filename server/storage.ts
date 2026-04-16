@@ -1,7 +1,7 @@
-// Preconfigured storage helpers for Manus WebDev templates
-// Uses the Biz-provided storage proxy (Authorization: Bearer <token>)
+// Preconfigured storage: CloudWave S3 (preferred) or Forge proxy fallback
 
-import { ENV } from './_core/env';
+import { ENV } from "./_core/env";
+import { cloudwaveS3Put, isCloudwaveS3Configured } from "./s3Cloudwave";
 
 type StorageConfig = { baseUrl: string; apiKey: string };
 
@@ -67,15 +67,26 @@ function buildAuthHeaders(apiKey: string): HeadersInit {
   return { Authorization: `Bearer ${apiKey}` };
 }
 
+function toBuffer(data: Buffer | Uint8Array | string): Buffer {
+  if (typeof data === "string") return Buffer.from(data, "utf8");
+  return Buffer.isBuffer(data) ? data : Buffer.from(data);
+}
+
 export async function storagePut(
   relKey: string,
   data: Buffer | Uint8Array | string,
   contentType = "application/octet-stream"
 ): Promise<{ key: string; url: string }> {
-  const { baseUrl, apiKey } = getStorageConfig();
   const key = normalizeKey(relKey);
+  const buf = toBuffer(data);
+
+  if (isCloudwaveS3Configured()) {
+    return cloudwaveS3Put(key, buf, contentType);
+  }
+
+  const { baseUrl, apiKey } = getStorageConfig();
   const uploadUrl = buildUploadUrl(baseUrl, key);
-  const formData = toFormData(data, contentType, key.split("/").pop() ?? key);
+  const formData = toFormData(buf, contentType, key.split("/").pop() ?? key);
   const response = await fetch(uploadUrl, {
     method: "POST",
     headers: buildAuthHeaders(apiKey),

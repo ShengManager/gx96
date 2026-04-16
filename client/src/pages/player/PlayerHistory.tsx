@@ -20,6 +20,11 @@ const statusColor = (s: string) => {
   }
 };
 
+function isForfeitedWithdrawal(row: any): boolean {
+  const note = String(row?.handleNote || row?.note || "").toLowerCase();
+  return note.includes("forfeit");
+}
+
 export default function PlayerHistory() {
   const { accessToken, isAuthenticated } = usePlayerAuth();
 
@@ -115,16 +120,31 @@ function WithdrawalHistory({ token }: { token: string }) {
       {withdrawals.map((w: any) => (
         <Card key={w.id} className="overflow-hidden">
           <CardContent className="py-3.5 px-4 flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-orange-500/10 flex items-center justify-center flex-shrink-0">
-              <ArrowUpCircle className="w-5 h-5 text-orange-500" />
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${
+              isForfeitedWithdrawal(w) ? "bg-rose-500/10" : "bg-orange-500/10"
+            }`}>
+              <ArrowUpCircle className={`w-5 h-5 ${isForfeitedWithdrawal(w) ? "text-rose-500" : "text-orange-500"}`} />
             </div>
             <div className="flex-1 min-w-0">
               <p className="font-semibold text-sm">MYR {parseFloat(w.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
               <p className="text-[11px] text-muted-foreground">{new Date(w.createdAt).toLocaleString()}</p>
+              <p className={`text-[11px] mt-0.5 ${isForfeitedWithdrawal(w) ? "text-rose-400" : "text-muted-foreground"}`}>
+                {isForfeitedWithdrawal(w) ? "Forfeited" : "Withdrawal"} · Order #{w.id}
+              </p>
+              {w.handleNote && (
+                <p className="text-[10px] text-muted-foreground/70 truncate">{w.handleNote}</p>
+              )}
             </div>
-            <span className={`text-[11px] font-medium px-2.5 py-1 rounded-full border flex-shrink-0 capitalize ${statusColor(w.status)}`}>
-              {w.status}
-            </span>
+            <div className="flex flex-col items-end gap-1">
+              {isForfeitedWithdrawal(w) && (
+                <span className="text-[10px] font-medium px-2 py-0.5 rounded-full border border-rose-500/30 text-rose-400 bg-rose-500/10">
+                  forfeited
+                </span>
+              )}
+              <span className={`text-[11px] font-medium px-2.5 py-1 rounded-full border flex-shrink-0 capitalize ${statusColor(w.status)}`}>
+                {w.status}
+              </span>
+            </div>
           </CardContent>
         </Card>
       ))}

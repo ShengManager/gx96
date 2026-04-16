@@ -21,8 +21,11 @@ export default function AdminWithdrawals() {
   const [rejectReason, setRejectReason] = useState("");
   const [pointsRecovered, setPointsRecovered] = useState("");
   const [approveNote, setApproveNote] = useState("");
+  const [handleNote, setHandleNote] = useState("");
+  const [handleBankId, setHandleBankId] = useState("");
   const [showApproveDialog, setShowApproveDialog] = useState(false);
   const [showRejectDialog, setShowRejectDialog] = useState(false);
+  const [showHandleDialog, setShowHandleDialog] = useState(false);
 
   const wdQuery = trpc.adminFinance.withdrawals.list.useQuery(
     { token: accessToken || "", status: status === "all" ? undefined : status, page, pageSize: 20 },
@@ -38,6 +41,23 @@ export default function AdminWithdrawals() {
     onSuccess: () => { wdQuery.refetch(); setShowRejectDialog(false); toast.success("Withdrawal rejected"); },
     onError: (err) => toast.error(err.message),
   });
+  const handleMutation = trpc.adminFinance.withdrawals.handle.useMutation({
+    onSuccess: () => {
+      wdQuery.refetch();
+      setShowHandleDialog(false);
+      setHandleNote("");
+      setHandleBankId("");
+      toast.success("Withdrawal moved to processing");
+    },
+    onError: (err) => toast.error(err.message),
+  });
+  const bankQuery = trpc.adminFinance.banks.list.useQuery(
+    { token: accessToken || "" },
+    { enabled: !!accessToken }
+  );
+  const withdrawBanks = ((bankQuery.data as any[]) || []).filter((b: any) =>
+    b.status === "active" && (b.usageType === "withdraw" || b.usageType === "both")
+  );
 
   const data = wdQuery.data;
   const totalPages = data ? Math.ceil(data.total / 20) : 0;
@@ -127,9 +147,16 @@ export default function AdminWithdrawals() {
                   <TableCell className="text-right">
                     {canEdit && (wd.status === "pending" || wd.status === "processing") && (
                       <div className="flex items-center justify-end gap-1">
-                        <Button size="sm" variant="default" onClick={() => { setSelectedWd(wd); setShowApproveDialog(true); }}>
-                          <Check className="w-3 h-3 mr-1" /> Approve
-                        </Button>
+                        {wd.status === "pending" && (
+                          <Button size="sm" variant="outline" onClick={() => { setSelectedWd(wd); setShowHandleDialog(true); }}>
+                            Handle
+                          </Button>
+                        )}
+                        {wd.status === "processing" && (
+                          <Button size="sm" variant="default" onClick={() => { setSelectedWd(wd); setShowApproveDialog(true); }}>
+                            <Check className="w-3 h-3 mr-1" /> Approve
+                          </Button>
+                        )}
                         <Button size="sm" variant="destructive" onClick={() => { setSelectedWd(wd); setShowRejectDialog(true); }}>
                           <X className="w-3 h-3 mr-1" /> Reject
                         </Button>
@@ -167,10 +194,57 @@ export default function AdminWithdrawals() {
             <p>Amount: <strong>${selectedWd ? parseFloat(selectedWd.amount).toFixed(2) : ""}</strong></p>
             <p>Bank: {selectedWd?.bankName} - {selectedWd?.bankAccountNumber}</p>
             <p>Account Name: {selectedWd?.bankAccountName}</p>
+            <p className="text-xs text-muted-foreground">Only processing withdrawals can be approved.</p>
             <Textarea placeholder="Note (optional)" value={approveNote} onChange={e => setApproveNote(e.target.value)} />
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setShowApproveDialog(false)}>Cancel</Button>
               <Button onClick={() => approveMutation.mutate({ token: accessToken!, withdrawalId: selectedWd.id, note: approveNote })}>Confirm Approve</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showHandleDialog} onOpenChange={setShowHandleDialog}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Handle Withdrawal #{selectedWd?.id}</DialogTitle></DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Staff should verify player game logs and risk condition, then choose payout bank.
+            </p>
+            <div className="space-y-2">
+              <Label>Payout Bank (required)</Label>
+              <Select value={handleBankId} onValueChange={setHandleBankId}>
+                <SelectTrigger><SelectValue placeholder="Select withdraw bank..." /></SelectTrigger>
+                <SelectContent>
+                  {withdrawBanks.map((b: any) => (
+                    <SelectItem key={b.id} value={String(b.id)}>
+                      {b.bankName} ({b.accountName} / {b.accountNumber})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Handle Note (gamelog/risk check)</Label>
+              <Textarea
+                placeholder="Example: Checked GameLog, no anomaly. Ready for payout."
+                value={handleNote}
+                onChange={e => setHandleNote(e.target.value)}
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setShowHandleDialog(false)}>Cancel</Button>
+              <Button
+                disabled={!handleBankId || handleMutation.isPending}
+                onClick={() => handleMutation.mutate({
+                  token: accessToken!,
+                  withdrawalId: selectedWd.id,
+                  bankId: Number(handleBankId),
+                  note: handleNote || undefined,
+                })}
+              >
+                Confirm Handle
+              </Button>
             </div>
           </div>
         </DialogContent>

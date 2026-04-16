@@ -19,8 +19,12 @@ export type GameListItem = {
   gameCode: string;
   gameName: string;
   gameType: string;
+  gameTypeLabel?: string;
   imageUrl?: string;
   provider: string;
+  providerType?: string;
+  providerTypeLabel?: string;
+  supportedPlatforms?: string[];
 };
 
 export type GameLogEntry = {
@@ -62,6 +66,8 @@ export type ProviderInfo = {
   providerId: number;
   providerCode: string;
   providerName: string;
+  providerType?: string;
+  providerTypeLabel?: string;
   status: string;
 };
 
@@ -201,10 +207,94 @@ export async function getGameList(
   provider?: string
 ): Promise<MWResponse<{ games?: GameListItem[] }>> {
   const client = createClient(config);
+  let providerMetaMap = new Map<string, { providerType?: string; providerTypeLabel?: string }>();
+  try {
+    const info = await getProjectInfo(config);
+    if (info.success && Array.isArray(info.providers)) {
+      providerMetaMap = new Map(
+        info.providers.map((p) => [
+          String(p.providerCode || "").trim(),
+          {
+            providerType: p.providerType ? String(p.providerType).trim() : undefined,
+            providerTypeLabel: p.providerTypeLabel ? String(p.providerTypeLabel).trim() : undefined,
+          },
+        ])
+      );
+    }
+  } catch {
+    // Ignore ProjectInfo failures; game list still works without providerType.
+  }
   const body: any = {};
   if (provider) body.provider = provider;
   const { data } = await client.post("/api/gateway/GameList", body);
-  return data;
+  const rawGames = Array.isArray(data?.games) ? data.games : [];
+  const normalizedGames: GameListItem[] = rawGames.map((g: any) => {
+    const gameCode = String(g.gameCode || g.GameCode || "").trim();
+    const gameName = String(g.gameName || g.GameName || "").trim();
+    const rawType = String(g.gameType || g.GameType || "Other").trim();
+    const upstreamTypeLabel = String(g.gameTypeLabel || g.GameTypeLabel || "").trim();
+    const normalizedType = normalizeGameType(rawType);
+    const resolvedTypeLabel = upstreamTypeLabel || normalizedType;
+    const resolvedProvider = String(g.provider || g.Provider || provider || "").trim();
+    const providerMeta = providerMetaMap.get(resolvedProvider);
+    const imageUrl = g.imageUrl || g.ImageUrl || undefined;
+    const supportedPlatforms = Array.isArray(g.supportedPlatforms)
+      ? g.supportedPlatforms
+      : Array.isArray(g.SupportedPlatforms)
+        ? g.SupportedPlatforms
+        : undefined;
+
+    return {
+      gameCode,
+      gameName,
+      gameType: rawType || normalizedType,
+      gameTypeLabel: resolvedTypeLabel,
+      imageUrl,
+      provider: resolvedProvider,
+      providerType: providerMeta?.providerType,
+      providerTypeLabel: providerMeta?.providerTypeLabel,
+      supportedPlatforms,
+    };
+  }).filter((g: GameListItem) => g.gameCode && g.gameName);
+
+  return {
+    ...data,
+    games: normalizedGames,
+  };
+}
+
+function normalizeGameType(rawType: string): string {
+  const type = rawType.trim();
+  const map: Record<string, string> = {
+    Slot: "Slot",
+    Live: "Live Casino",
+    Sport: "Sports",
+    Card: "Card",
+    Fish: "Fishing",
+    "1": "Slot",
+    "2": "Live Casino",
+    "3": "Sports",
+    "4": "Card",
+    "5": "Fishing",
+    "301": "Slot",
+    "302": "Live Casino",
+    "303": "Sports",
+    "304": "Card",
+    "305": "Fishing",
+    "401": "Slot",
+    "402": "Live Casino",
+    "403": "Fishing",
+    "404": "Card",
+    "501": "Live Casino",
+    "502": "Arcade",
+    "503": "Lottery",
+    "504": "Card",
+    "505": "Sports",
+  };
+
+  if (map[type]) return map[type];
+  if (/^\d+$/.test(type)) return "Other";
+  return type || "Other";
 }
 
 export async function syncGameLog(

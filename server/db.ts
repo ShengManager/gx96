@@ -121,6 +121,77 @@ export async function getPlayersByAdmin(adminId: number, opts?: { search?: strin
   return { players: rows, total: countRows[0]?.cnt || 0 };
 }
 
+/** Map inviter player id -> short display label (same admin). */
+export async function getInviterLabelsForPlayerIds(adminId: number, inviterIds: number[]) {
+  const uniq = Array.from(new Set(inviterIds.filter((id) => typeof id === "number" && id > 0)));
+  const map = new Map<number, string>();
+  if (uniq.length === 0) return map;
+  const database = await getDb();
+  if (!database) return map;
+  const rows = await database
+    .select({
+      id: players.id,
+      telegramFirstName: players.telegramFirstName,
+      telegramLastName: players.telegramLastName,
+      telegramUsername: players.telegramUsername,
+      phone: players.phone,
+    })
+    .from(players)
+    .where(and(eq(players.adminId, adminId), inArray(players.id, uniq)));
+  for (const r of rows) {
+    const name = [r.telegramFirstName, r.telegramLastName].filter(Boolean).join(" ").trim();
+    const label =
+      name ||
+      (r.telegramUsername ? `@${r.telegramUsername}` : "") ||
+      (r.phone ? String(r.phone) : "") ||
+      `#${r.id}`;
+    map.set(r.id, label);
+  }
+  return map;
+}
+
+export async function getInvitedPlayersPage(
+  adminId: number,
+  inviterPlayerId: number,
+  page: number,
+  pageSize: number
+) {
+  const database = await getDb();
+  if (!database) return { rows: [], total: 0 };
+  const inviter = await database
+    .select({ id: players.id })
+    .from(players)
+    .where(and(eq(players.id, inviterPlayerId), eq(players.adminId, adminId)))
+    .limit(1);
+  if (!inviter[0]) return { rows: [], total: 0 };
+
+  const safePage = Math.max(1, page);
+  const safeSize = Math.min(100, Math.max(1, pageSize));
+  const offset = (safePage - 1) * safeSize;
+  const conditions = and(eq(players.adminId, adminId), eq(players.invitedBy, inviterPlayerId));
+
+  const [listRows, countRows] = await Promise.all([
+    database
+      .select({
+        id: players.id,
+        phone: players.phone,
+        telegramUsername: players.telegramUsername,
+        telegramFirstName: players.telegramFirstName,
+        telegramLastName: players.telegramLastName,
+        inviteCode: players.inviteCode,
+        createdAt: players.createdAt,
+      })
+      .from(players)
+      .where(conditions)
+      .orderBy(desc(players.createdAt))
+      .limit(safeSize)
+      .offset(offset),
+    database.select({ cnt: count() }).from(players).where(conditions),
+  ]);
+
+  return { rows: listRows, total: countRows[0]?.cnt || 0 };
+}
+
 export async function getPlayerById(id: number) {
   const db = await getDb();
   if (!db) return null;
@@ -231,6 +302,18 @@ export async function getDepositBanks(adminId: number) {
   ).orderBy(asc(banks.sortOrder));
 }
 
+export async function getWithdrawBanks(adminId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(banks).where(
+    and(
+      eq(banks.adminId, adminId),
+      eq(banks.status, "active"),
+      or(eq(banks.usageType, "withdraw"), eq(banks.usageType, "both"))
+    )
+  ).orderBy(asc(banks.sortOrder));
+}
+
 // ─── System Settings ───
 export async function getSetting(adminId: number, key: string): Promise<string | null> {
   const db = await getDb();
@@ -250,6 +333,32 @@ export async function getAllSettings(adminId: number) {
   const db = await getDb();
   if (!db) return [];
   return db.select().from(systemSettings).where(eq(systemSettings.adminId, adminId));
+}
+
+/** System settings: min/max deposit & withdraw (Admin → Settings) */
+export async function getFinanceLimits(adminId: number): Promise<{
+  minDeposit?: number;
+  maxDeposit?: number;
+  minWithdraw?: number;
+  maxWithdraw?: number;
+}> {
+  const parseOpt = (s: string | null): number | undefined => {
+    if (s == null || String(s).trim() === "") return undefined;
+    const n = parseFloat(String(s));
+    return Number.isFinite(n) && n >= 0 ? n : undefined;
+  };
+  const [minD, maxD, minW, maxW] = await Promise.all([
+    getSetting(adminId, "min_deposit"),
+    getSetting(adminId, "max_deposit"),
+    getSetting(adminId, "min_withdraw"),
+    getSetting(adminId, "max_withdraw"),
+  ]);
+  return {
+    minDeposit: parseOpt(minD),
+    maxDeposit: parseOpt(maxD),
+    minWithdraw: parseOpt(minW),
+    maxWithdraw: parseOpt(maxW),
+  };
 }
 
 // ─── Banners ───

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAdminAuth } from "@/contexts/AdminAuthContext";
 import { trpc } from "@/lib/trpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,60 +12,40 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Plus, Edit, Trash2, Building2 } from "lucide-react";
 import { toast } from "sonner";
 
-// Note: Banks are managed through adminSettings router since there's no dedicated adminBanks router.
-// We'll use direct fetch calls to the bank endpoints.
-
 export default function AdminBanks() {
   const { accessToken, hasPermission } = useAdminAuth();
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<any>(null);
+  const banksQuery = trpc.adminFinance.banks.list.useQuery(
+    { token: accessToken || "" },
+    { enabled: !!accessToken }
+  );
 
-  // Banks data fetched via REST since no dedicated tRPC router exists yet
-  const [banks, setBanks] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const createMutation = trpc.adminFinance.banks.create.useMutation({
+    onSuccess: () => {
+      banksQuery.refetch();
+      setShowForm(false);
+      toast.success("Bank created");
+    },
+    onError: (err: any) => toast.error(err.message || "Failed to create bank"),
+  });
 
-  const fetchBanks = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch("/api/banks", { headers: { Authorization: `Bearer ${accessToken}` } });
-      if (res.ok) setBanks(await res.json());
-    } catch { /* ignore */ }
-    setLoading(false);
-  };
+  const updateMutation = trpc.adminFinance.banks.update.useMutation({
+    onSuccess: () => {
+      banksQuery.refetch();
+      setEditing(null);
+      toast.success("Bank updated");
+    },
+    onError: (err: any) => toast.error(err.message || "Failed to update bank"),
+  });
 
-  useEffect(() => { if (accessToken) fetchBanks(); }, [accessToken]);
-
-  const handleCreate = async (data: any) => {
-    try {
-      const res = await fetch("/api/banks", {
-        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
-        body: JSON.stringify(data),
-      });
-      if (res.ok) { fetchBanks(); setShowForm(false); toast.success("Bank created"); }
-      else toast.error("Failed to create bank");
-    } catch (err: any) { toast.error(err.message); }
-  };
-
-  const handleUpdate = async (data: any) => {
-    try {
-      const res = await fetch(`/api/banks/${editing.id}`, {
-        method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
-        body: JSON.stringify(data),
-      });
-      if (res.ok) { fetchBanks(); setEditing(null); toast.success("Bank updated"); }
-      else toast.error("Failed to update bank");
-    } catch (err: any) { toast.error(err.message); }
-  };
-
-  const handleDelete = async (bankId: number) => {
-    try {
-      const res = await fetch(`/api/banks/${bankId}`, {
-        method: "DELETE", headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (res.ok) { fetchBanks(); toast.success("Bank deleted"); }
-      else toast.error("Failed to delete bank");
-    } catch (err: any) { toast.error(err.message); }
-  };
+  const deleteMutation = trpc.adminFinance.banks.delete.useMutation({
+    onSuccess: () => {
+      banksQuery.refetch();
+      toast.success("Bank deleted");
+    },
+    onError: (err: any) => toast.error(err.message || "Failed to delete bank"),
+  });
 
   const canEdit = hasPermission("bank", "edit");
   const canDelete = hasPermission("bank", "delete");
@@ -98,14 +78,14 @@ export default function AdminBanks() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {banks.map((bank: any) => (
+              {(banksQuery.data || []).map((bank: any) => (
                 <TableRow key={bank.id}>
                   <TableCell>
                     <div className="flex items-center gap-2">
                       <Building2 className="w-4 h-4 text-primary" />
                       <div>
                         <p className="font-medium">{bank.bankName}</p>
-                        <p className="text-xs text-muted-foreground">{bank.bankCode || ""}</p>
+                        <p className="text-xs text-muted-foreground">{bank.country}</p>
                       </div>
                     </div>
                   </TableCell>
@@ -115,10 +95,10 @@ export default function AdminBanks() {
                       <p className="text-xs text-muted-foreground">{bank.accountName}</p>
                     </div>
                   </TableCell>
-                  <TableCell><Badge variant="outline">{bank.countryCode}</Badge></TableCell>
+                  <TableCell><Badge variant="outline">{bank.country}</Badge></TableCell>
                   <TableCell>
-                    <Badge variant={bank.bankType === "deposit" ? "default" : bank.bankType === "withdraw" ? "secondary" : "outline"}>
-                      {bank.bankType}
+                    <Badge variant={bank.usageType === "deposit" ? "default" : bank.usageType === "withdraw" ? "secondary" : "outline"}>
+                      {bank.usageType}
                     </Badge>
                   </TableCell>
                   <TableCell>
@@ -135,7 +115,7 @@ export default function AdminBanks() {
                       )}
                       {canDelete && (
                         <Button variant="ghost" size="icon" onClick={() => {
-                          if (confirm("Delete this bank?")) handleDelete(bank.id);
+                          if (confirm("Delete this bank?")) deleteMutation.mutate({ token: accessToken!, bankId: bank.id });
                         }}>
                           <Trash2 className="w-4 h-4 text-red-500" />
                         </Button>
@@ -144,10 +124,10 @@ export default function AdminBanks() {
                   </TableCell>
                 </TableRow>
               ))}
-              {banks.length === 0 && (
+              {(!banksQuery.data || banksQuery.data.length === 0) && (
                 <TableRow>
                   <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
-                    {loading ? "Loading..." : "No banks configured"}
+                    {banksQuery.isLoading ? "Loading..." : "No banks configured"}
                   </TableCell>
                 </TableRow>
               )}
@@ -159,7 +139,8 @@ export default function AdminBanks() {
       <BankFormDialog
         open={showForm}
         onOpenChange={setShowForm}
-        onSubmit={(data) => handleCreate(data)}
+        accessToken={accessToken || ""}
+        onSubmit={(data) => createMutation.mutate({ token: accessToken!, ...data })}
         title="Add Bank"
       />
 
@@ -167,7 +148,8 @@ export default function AdminBanks() {
         <BankFormDialog
           open={!!editing}
           onOpenChange={(open) => { if (!open) setEditing(null); }}
-          onSubmit={(data) => handleUpdate(data)}
+          accessToken={accessToken || ""}
+          onSubmit={(data) => updateMutation.mutate({ token: accessToken!, bankId: editing.id, ...data })}
           title="Edit Bank"
           initialData={editing}
         />
@@ -176,23 +158,53 @@ export default function AdminBanks() {
   );
 }
 
-function BankFormDialog({ open, onOpenChange, onSubmit, title, initialData }: {
+function BankFormDialog({ open, onOpenChange, onSubmit, title, initialData, accessToken }: {
   open: boolean; onOpenChange: (open: boolean) => void;
-  onSubmit: (data: any) => void; title: string; initialData?: any;
+  onSubmit: (data: any) => void; title: string; initialData?: any; accessToken: string;
 }) {
+  const [country, setCountry] = useState(initialData?.country || "MY");
+  const bankCatalogQuery = trpc.adminFinance.banks.catalog.useQuery(
+    { token: accessToken || "", country },
+    { enabled: !!accessToken }
+  );
+  const catalog = bankCatalogQuery.data || [];
+  const initialCode = useMemo(() => {
+    const found = catalog.find((b: any) => b.bankName === initialData?.bankName);
+    return found?.bankCode || "";
+  }, [catalog, initialData?.bankName]);
+
   const [form, setForm] = useState({
     bankName: initialData?.bankName || "",
-    bankCode: initialData?.bankCode || "",
+    bankCode: initialCode,
     accountNumber: initialData?.accountNumber || "",
     accountName: initialData?.accountName || "",
-    countryCode: initialData?.countryCode || "MY",
-    bankType: initialData?.bankType || "both",
+    usageType: initialData?.usageType || "both",
     status: initialData?.status || "active",
-    minDeposit: initialData?.minDeposit ? parseFloat(initialData.minDeposit) : 0,
-    maxDeposit: initialData?.maxDeposit ? parseFloat(initialData.maxDeposit) : 0,
-    minWithdraw: initialData?.minWithdraw ? parseFloat(initialData.minWithdraw) : 0,
-    maxWithdraw: initialData?.maxWithdraw ? parseFloat(initialData.maxWithdraw) : 0,
+    sortOrder: initialData?.sortOrder || 0,
   });
+
+  useEffect(() => {
+    if (initialData?.bankName && !form.bankCode && initialCode) {
+      setForm((f) => ({ ...f, bankCode: initialCode }));
+    }
+  }, [initialData?.bankName, form.bankCode, initialCode]);
+
+  const countryOptions = [
+    { code: "MY", label: "Malaysia" },
+    { code: "SG", label: "Singapore" },
+    { code: "TH", label: "Thailand" },
+    { code: "AU", label: "Australia" },
+    { code: "US", label: "United States" },
+  ];
+
+  const onSelectBankCode = (code: string) => {
+    const selected = catalog.find((b: any) => b.bankCode === code);
+    setForm((f) => ({
+      ...f,
+      bankCode: code,
+      bankName: selected?.bankName || "",
+    }));
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -201,13 +213,34 @@ function BankFormDialog({ open, onOpenChange, onSubmit, title, initialData }: {
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-2">
-              <Label>Bank Name</Label>
-              <Input value={form.bankName} onChange={e => setForm(f => ({ ...f, bankName: e.target.value }))} />
+              <Label>Country</Label>
+              <Select value={country} onValueChange={(v) => {
+                setCountry(v);
+                setForm((f) => ({ ...f, bankCode: "", bankName: "" }));
+              }}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {countryOptions.map((c) => (
+                    <SelectItem key={c.code} value={c.code}>{c.code} - {c.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-2">
-              <Label>Bank Code</Label>
-              <Input value={form.bankCode} onChange={e => setForm(f => ({ ...f, bankCode: e.target.value }))} placeholder="e.g. MBBEMYKL" />
+              <Label>Bank</Label>
+              <Select value={form.bankCode} onValueChange={onSelectBankCode}>
+                <SelectTrigger><SelectValue placeholder={bankCatalogQuery.isLoading ? "Loading banks..." : "Select a bank"} /></SelectTrigger>
+                <SelectContent>
+                  {catalog.map((b: any) => (
+                    <SelectItem key={b.bankCode} value={b.bankCode}>{b.bankName} ({b.bankCode})</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
+          </div>
+          <div className="space-y-2">
+            <Label>Bank Name</Label>
+            <Input value={form.bankName} readOnly />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-2">
@@ -221,12 +254,8 @@ function BankFormDialog({ open, onOpenChange, onSubmit, title, initialData }: {
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div className="space-y-2">
-              <Label>Country</Label>
-              <Input value={form.countryCode} onChange={e => setForm(f => ({ ...f, countryCode: e.target.value }))} />
-            </div>
-            <div className="space-y-2">
               <Label>Type</Label>
-              <Select value={form.bankType} onValueChange={v => setForm(f => ({ ...f, bankType: v }))}>
+              <Select value={form.usageType} onValueChange={v => setForm(f => ({ ...f, usageType: v }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="deposit">Deposit Only</SelectItem>
@@ -235,6 +264,10 @@ function BankFormDialog({ open, onOpenChange, onSubmit, title, initialData }: {
                   <SelectItem value="internal">Internal</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Sort Order</Label>
+              <Input type="number" value={form.sortOrder} onChange={e => setForm(f => ({ ...f, sortOrder: parseInt(e.target.value || "0", 10) }))} />
             </div>
             <div className="space-y-2">
               <Label>Status</Label>
@@ -248,29 +281,22 @@ function BankFormDialog({ open, onOpenChange, onSubmit, title, initialData }: {
               </Select>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-2">
-              <Label>Min Deposit</Label>
-              <Input type="number" value={form.minDeposit} onChange={e => setForm(f => ({ ...f, minDeposit: parseFloat(e.target.value) || 0 }))} />
-            </div>
-            <div className="space-y-2">
-              <Label>Max Deposit</Label>
-              <Input type="number" value={form.maxDeposit} onChange={e => setForm(f => ({ ...f, maxDeposit: parseFloat(e.target.value) || 0 }))} />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-2">
-              <Label>Min Withdraw</Label>
-              <Input type="number" value={form.minWithdraw} onChange={e => setForm(f => ({ ...f, minWithdraw: parseFloat(e.target.value) || 0 }))} />
-            </div>
-            <div className="space-y-2">
-              <Label>Max Withdraw</Label>
-              <Input type="number" value={form.maxWithdraw} onChange={e => setForm(f => ({ ...f, maxWithdraw: parseFloat(e.target.value) || 0 }))} />
-            </div>
-          </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-            <Button disabled={!form.bankName || !form.accountNumber} onClick={() => onSubmit(form)}>Save</Button>
+            <Button
+              disabled={!form.bankName || !form.accountNumber || !form.accountName || !country}
+              onClick={() => onSubmit({
+                country,
+                bankName: form.bankName,
+                accountName: form.accountName,
+                accountNumber: form.accountNumber,
+                usageType: form.usageType,
+                status: form.status,
+                sortOrder: form.sortOrder,
+              })}
+            >
+              Save
+            </Button>
           </div>
         </div>
       </DialogContent>

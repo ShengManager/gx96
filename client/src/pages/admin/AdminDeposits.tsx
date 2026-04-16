@@ -11,6 +11,22 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Check, X, Eye, Clock, ChevronLeft, ChevronRight, Bell, ImageIcon } from "lucide-react";
 import { toast } from "sonner";
 
+function resolveReceiptSrc(input?: string | null): string {
+  const src = String(input || "").trim();
+  if (!src) return "";
+  if (src.startsWith("/api/media/s3?")) return src;
+  try {
+    const u = new URL(src, window.location.origin);
+    if (u.pathname.startsWith("/api/media/s3")) return u.pathname + u.search;
+    if (u.host.includes("cloudwave-s3.com")) {
+      return `/api/media/s3?url=${encodeURIComponent(u.toString())}`;
+    }
+    return u.toString();
+  } catch {
+    return src;
+  }
+}
+
 export default function AdminDeposits() {
   const { accessToken, hasPermission } = useAdminAuth();
   const [status, setStatus] = useState("all");
@@ -45,6 +61,7 @@ export default function AdminDeposits() {
   const data = depositsQuery.data;
   const totalPages = data ? Math.ceil(data.total / 20) : 0;
   const canEdit = hasPermission("deposit", "edit");
+  const selectedReceiptSrc = resolveReceiptSrc(selectedDeposit?.receiptUrl);
 
   const statusColor = (s: string) => {
     switch (s) {
@@ -218,9 +235,17 @@ export default function AdminDeposits() {
           <DialogHeader>
             <DialogTitle>Deposit Receipt #{selectedDeposit?.id}</DialogTitle>
           </DialogHeader>
-          {selectedDeposit?.receiptUrl && (
-            <img src={selectedDeposit.receiptUrl} alt="Receipt" className="w-full rounded-lg" />
+          {selectedReceiptSrc && (
+            <img
+              src={selectedReceiptSrc}
+              alt="Receipt"
+              className="w-full rounded-lg"
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).style.display = "none";
+              }}
+            />
           )}
+          {!selectedReceiptSrc && <p className="text-sm text-muted-foreground">No receipt image URL</p>}
         </DialogContent>
       </Dialog>
     </div>

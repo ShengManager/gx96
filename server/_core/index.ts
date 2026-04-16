@@ -11,10 +11,16 @@ import { initWebSocket } from "../services/websocket";
 import { storagePut } from "../storage";
 import { startAllBots } from "../services/telegramBot";
 import { nanoid } from "nanoid";
-import { verifyAccessToken } from "../services/auth";
+import multer from "multer";
+import { verifyAccessToken, refreshAccessToken } from "../services/auth";
 import { getDb } from "../db";
 import { deposits } from "../../drizzle/schema";
 import { eq, and } from "drizzle-orm";
+import {
+  cloudwaveS3GetSignedUrl,
+  isCloudwaveS3Configured,
+  tryExtractCloudwaveObjectKeyFromUrl,
+} from "../s3Cloudwave";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -46,6 +52,88 @@ async function startServer() {
 
   // Initialize WebSocket
   initWebSocket(server);
+
+  const playerImageUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (_req, file, cb) => {
+      const ok =
+        /^image\/(jpeg|jpg|png|gif|webp)$/i.test(file.mimetype) ||
+        file.mimetype === "application/octet-stream";
+      cb(null, ok);
+    },
+  });
+
+  function sanitizeUploadCategory(raw: unknown): string {
+    const allowed = new Set(["deposit", "withdraw", "receipts", "kyc", "other"]);
+    const c = String(raw || "deposit").toLowerCase().trim();
+    return allowed.has(c) ? c : "other";
+  }
+
+  function extFromFile(file: Express.Multer.File): string {
+    const n = file.originalname || "";
+    const ext = n.includes(".") ? n.split(".").pop() || "" : "";
+    if (ext && /^[a-z0-9]+$/i.test(ext)) return ext.toLowerCase().slice(0, 8);
+    if (file.mimetype === "image/png") return "png";
+    if (file.mimetype === "image/gif") return "gif";
+    if (file.mimetype === "image/webp") return "webp";
+    return "jpg";
+  }
+
+  /**
+   * Multipart upload for players (deposit receipt, withdraw proof, etc.)
+   * Form: file=@image, optional field category=deposit|withdraw|...
+   * Object key: gx96/a{adminId}/{category}/player_{playerId}/{nanoid}.{ext}
+   */
+  app.post("/api/upload", playerImageUpload.single("file"), async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader?.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+      const payload = verifyAccessToken(authHeader.slice(7));
+      if (!payload || payload.type !== "player" || !payload.adminId) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+      const file = req.file;
+      if (!file?.buffer?.length) {
+        return res.status(400).json({ error: "No file uploaded (field name: file)" });
+      }
+
+      const category = sanitizeUploadCategory(req.body?.category);
+      const ext = extFromFile(file);
+      const key = `gx96/a${payload.adminId}/${category}/player_${payload.id}/${nanoid(10)}.${ext}`;
+      const contentType = file.mimetype && file.mimetype !== "application/octet-stream"
+        ? file.mimetype
+        : `image/${ext === "jpg" ? "jpeg" : ext}`;
+
+      const { url } = await storagePut(key, file.buffer, contentType);
+      const previewUrl = isCloudwaveS3Configured()
+        ? `/api/media/s3?key=${encodeURIComponent(key)}`
+        : url;
+      return res.json({ url: previewUrl, rawUrl: url, key, category });
+    } catch (err: any) {
+      console.error("[Upload] /api/upload failed:", err);
+      return res.status(500).json({ error: err.message || "Upload failed" });
+    }
+  });
+
+  // Read private CloudWave objects through signed redirect URL
+  app.get("/api/media/s3", async (req, res) => {
+    try {
+      const keyParam = typeof req.query.key === "string" ? req.query.key : "";
+      const sourceUrl = typeof req.query.url === "string" ? req.query.url : "";
+      const keyFromUrl = sourceUrl ? tryExtractCloudwaveObjectKeyFromUrl(sourceUrl) : null;
+      const objectKey = keyParam || keyFromUrl || "";
+      if (!objectKey) return res.status(400).json({ error: "Missing key/url" });
+      if (!isCloudwaveS3Configured()) return res.status(500).json({ error: "CloudWave S3 not configured" });
+      const signedUrl = await cloudwaveS3GetSignedUrl(objectKey, 3600);
+      return res.redirect(302, signedUrl);
+    } catch (err: any) {
+      console.error("[Media] /api/media/s3 failed:", err);
+      return res.status(500).json({ error: err.message || "Failed to load media" });
+    }
+  });
 
   // File upload endpoint for deposit receipts
   app.post("/api/upload/receipt", async (req, res) => {
@@ -116,6 +204,25 @@ async function startServer() {
     } catch (err: any) {
       console.error("[AutoLogin] Error:", err);
       return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Player access token refresh (keeps frontend session alive)
+  app.post("/api/player/refresh", async (req, res) => {
+    try {
+      const refreshToken = typeof req.body?.refreshToken === "string" ? req.body.refreshToken : "";
+      if (!refreshToken) return res.status(400).json({ error: "Missing refreshToken" });
+      const result = await refreshAccessToken(refreshToken);
+      if (!result.success || !result.accessToken || !result.refreshToken) {
+        return res.status(401).json({ error: result.error || "Refresh failed" });
+      }
+      return res.json({
+        accessToken: result.accessToken,
+        refreshToken: result.refreshToken,
+      });
+    } catch (err: any) {
+      console.error("[Player Refresh] Error:", err);
+      return res.status(500).json({ error: err.message || "Refresh failed" });
     }
   });
 

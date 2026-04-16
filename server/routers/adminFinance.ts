@@ -94,6 +94,64 @@ export const adminFinanceRouter = router({
         return db.getWithdrawalsByAdmin(admin.adminId!, { status: input.status, page: input.page, pageSize: input.pageSize });
       }),
 
+    handle: publicProcedure
+      .input(z.object({
+        token: z.string(),
+        withdrawalId: z.number(),
+        bankId: z.number(),
+        note: z.string().optional(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const admin = requireAdmin(ctx);
+        await checkPermission(admin.id, admin.role!, "withdraw", "edit");
+
+        const database = await getDb();
+        if (!database) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+        const wdRows = await database
+          .select()
+          .from(withdrawals)
+          .where(and(eq(withdrawals.id, input.withdrawalId), eq(withdrawals.adminId, admin.adminId!)))
+          .limit(1);
+        const wd = wdRows[0];
+        if (!wd) throw new TRPCError({ code: "NOT_FOUND", message: "Withdrawal not found" });
+        if (wd.status !== "pending") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: `Only pending withdrawal can be handled (current: ${wd.status})` });
+        }
+
+        const bankRows = await database
+          .select()
+          .from(banks)
+          .where(and(eq(banks.id, input.bankId), eq(banks.adminId, admin.adminId!)))
+          .limit(1);
+        const selectedBank = bankRows[0];
+        if (!selectedBank || selectedBank.status !== "active" || (selectedBank.usageType !== "withdraw" && selectedBank.usageType !== "both")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Selected payout bank is invalid or inactive" });
+        }
+
+        await database
+          .update(withdrawals)
+          .set({
+            status: "processing",
+            handledBy: admin.id,
+            bankName: selectedBank.bankName,
+            bankAccountName: selectedBank.accountName,
+            bankAccountNumber: selectedBank.accountNumber,
+            handleNote: input.note || wd.handleNote || null,
+          })
+          .where(eq(withdrawals.id, input.withdrawalId));
+
+        await db.createAdminLog({
+          adminId: admin.id,
+          action: "handle_withdrawal",
+          module: "withdraw",
+          targetId: input.withdrawalId,
+          targetType: "withdrawal",
+          details: { bankId: input.bankId, note: input.note || null },
+        });
+        return { success: true };
+      }),
+
     approve: publicProcedure
       .input(z.object({ token: z.string(), withdrawalId: z.number(), note: z.string().optional() }))
       .mutation(async ({ input, ctx }) => {
@@ -137,6 +195,14 @@ export const adminFinanceRouter = router({
 
   // ─── Banks ───
   banks: router({
+    catalog: publicProcedure
+      .input(z.object({ token: z.string(), country: z.string().default("MY") }))
+      .query(async ({ input, ctx }) => {
+        const admin = requireAdmin(ctx);
+        await checkPermission(admin.id, admin.role!, "bank", "view");
+        return db.getBankCatalog(input.country);
+      }),
+
     list: publicProcedure
       .input(z.object({ token: z.string() }))
       .query(async ({ input, ctx }) => {
