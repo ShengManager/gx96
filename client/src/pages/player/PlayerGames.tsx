@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import {
   Gamepad2, Search, Loader2, Flame, Dice1, Trophy,
   Spade, Monitor, Smartphone, Download, X, Copy,
@@ -51,10 +51,13 @@ function getProviderType(game: any): string {
 
 export default function PlayerGames() {
   const { accessToken, isAuthenticated } = usePlayerAuth();
+  const [, setLocation] = useLocation();
   const [search, setSearch] = useState("");
   const [groupBy, setGroupBy] = useState<"type" | "provider">("type");
   const [activeCategory, setActiveCategory] = useState("all");
   const [launching, setLaunching] = useState<string | null>(null);
+  const [bonusConfirmOpen, setBonusConfirmOpen] = useState(false);
+  const [pendingGame, setPendingGame] = useState<any>(null);
   const [h5LoginDialogOpen, setH5LoginDialogOpen] = useState(false);
   const [h5LoginPayload, setH5LoginPayload] = useState<{
     gameName: string;
@@ -65,6 +68,10 @@ export default function PlayerGames() {
   } | null>(null);
 
   const gamesQuery = trpc.player.gameList.useQuery(
+    { token: accessToken || "" },
+    { enabled: !!accessToken }
+  );
+  const bonusListQuery = trpc.player.bonusList.useQuery(
     { token: accessToken || "" },
     { enabled: !!accessToken }
   );
@@ -148,8 +155,7 @@ export default function PlayerGames() {
     return result;
   }, [games, activeCategory, groupBy, search]);
 
-  const handleLaunch = (game: any) => {
-    if (!isAuthenticated) { toast.error("Please login first"); return; }
+  const doLaunch = (game: any) => {
     const gameCode = getGameCode(game);
     const provider = getGameProvider(game);
     if (!gameCode || !provider) {
@@ -167,6 +173,17 @@ export default function PlayerGames() {
     }
     setLaunching(gameCode);
     launchMutation.mutate({ token: accessToken!, provider, gameCode });
+  };
+
+  const handleLaunch = (game: any) => {
+    if (!isAuthenticated) { toast.error("Please login first"); return; }
+    const availableBonuses = ((bonusListQuery.data as any[]) || []).filter((b: any) => b?.canClaim);
+    if (availableBonuses.length > 0) {
+      setPendingGame(game);
+      setBonusConfirmOpen(true);
+      return;
+    }
+    doLaunch(game);
   };
 
   if (!isAuthenticated) {
@@ -400,6 +417,50 @@ export default function PlayerGames() {
                 }}
               >
                 Login
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={bonusConfirmOpen}
+        onOpenChange={(v) => {
+          setBonusConfirmOpen(v);
+          if (!v) setPendingGame(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Claim Bonus First?</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              You still have available bonuses. If you enter a game first, some bonuses may become unavailable.
+            </p>
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+              Recommended: claim your bonus first, then enter game.
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setBonusConfirmOpen(false);
+                  setPendingGame(null);
+                  setLocation("/bonus");
+                }}
+              >
+                Go Claim Bonus
+              </Button>
+              <Button
+                onClick={() => {
+                  const game = pendingGame;
+                  setBonusConfirmOpen(false);
+                  setPendingGame(null);
+                  if (game) doLaunch(game);
+                }}
+              >
+                Enter Game Anyway
               </Button>
             </div>
           </div>

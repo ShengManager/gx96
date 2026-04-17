@@ -838,8 +838,18 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         const bonusId = parseInt(data.split(":")[1]);
         const cycle = await db.getActiveCycle(player.id);
         const depositAmount = cycle ? parseFloat(cycle.depositAmount) : 0;
+        const idempotencyKey = `tg:${query.id}:${player.id}:${bonusId}`;
 
-        const result = await claimBonus(player.id, adminId, bonusId, depositAmount);
+        const result = await claimBonus(player.id, adminId, bonusId, depositAmount, {
+          idempotencyKey,
+          requestSource: "telegram_bot",
+          sourceEvent: "telegram_claim",
+          sourceRef: query.id,
+          requestMeta: {
+            callbackData: data,
+            chatId,
+          },
+        });
         if (result.success) {
           await sendAndTrack(bot, chatId, `✅ <b>Bonus Claimed!</b>\n\nAmount: $${(result.awardedAmount || 0).toFixed(2)}`, {
             reply_markup: { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "bonus" }]] },

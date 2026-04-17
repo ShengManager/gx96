@@ -264,6 +264,7 @@ export const bonusConfigs = mysqlTable("bonus_configs", {
   rolloverMultiplier: decimal("rolloverMultiplier", { precision: 8, scale: 2 }),
   turnoverTarget: decimal("turnoverTarget", { precision: 14, scale: 4 }),
   maxWithdraw: decimal("maxWithdraw", { precision: 14, scale: 4 }),
+  ruleVersion: int("ruleVersion").default(1).notNull(),
   isActive: boolean("isActive").default(true).notNull(),
   sortOrder: int("sortOrder").default(0).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -279,6 +280,12 @@ export const playerBonuses = mysqlTable("player_bonuses", {
   adminId: int("adminId").notNull(),
   bonusConfigId: int("bonusConfigId").notNull(),
   cycleId: int("cycleId"),
+  idempotencyKey: varchar("idempotencyKey", { length: 128 }),
+  claimPeriodKey: varchar("claimPeriodKey", { length: 64 }),
+  sourceEvent: varchar("sourceEvent", { length: 64 }).default("manual_claim"),
+  sourceRef: varchar("sourceRef", { length: 128 }),
+  ruleVersion: int("ruleVersion").default(1).notNull(),
+  claimMeta: json("claimMeta"),
   awardedAmount: decimal("awardedAmount", { precision: 14, scale: 4 }).notNull(),
   targetRollover: decimal("targetRollover", { precision: 14, scale: 4 }).default("0").notNull(),
   currentRollover: decimal("currentRollover", { precision: 14, scale: 4 }).default("0").notNull(),
@@ -287,9 +294,35 @@ export const playerBonuses = mysqlTable("player_bonuses", {
   status: mysqlEnum("status", ["active", "completed", "expired", "forfeited"]).default("active").notNull(),
   claimedAt: timestamp("claimedAt").defaultNow().notNull(),
   completedAt: timestamp("completedAt"),
-});
+}, (table) => [
+  uniqueIndex("uq_bonus_claim_idempotency").on(table.adminId, table.playerId, table.bonusConfigId, table.idempotencyKey),
+  index("idx_bonus_claim_period").on(table.adminId, table.playerId, table.bonusConfigId, table.claimPeriodKey),
+]);
 
 export type PlayerBonus = typeof playerBonuses.$inferSelect;
+
+// ─── 15. Bonus Ledger (immutable audit events) ───
+export const bonusLedger = mysqlTable("bonus_ledger", {
+  id: int("id").autoincrement().primaryKey(),
+  adminId: int("adminId").notNull(),
+  playerId: int("playerId").notNull(),
+  bonusConfigId: int("bonusConfigId").notNull(),
+  playerBonusId: int("playerBonusId"),
+  eventType: mysqlEnum("eventType", ["claim_attempt", "claim_awarded", "claim_rejected", "claim_duplicate"]).notNull(),
+  status: mysqlEnum("status", ["success", "failed"]).notNull(),
+  idempotencyKey: varchar("idempotencyKey", { length: 128 }),
+  claimPeriodKey: varchar("claimPeriodKey", { length: 64 }),
+  ruleVersion: int("ruleVersion"),
+  requestSource: varchar("requestSource", { length: 64 }),
+  reasonCode: varchar("reasonCode", { length: 64 }),
+  message: text("message"),
+  inputSnapshot: json("inputSnapshot"),
+  outputSnapshot: json("outputSnapshot"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_bonus_ledger_claim").on(table.adminId, table.playerId, table.bonusConfigId, table.createdAt),
+  index("idx_bonus_ledger_idem").on(table.idempotencyKey),
+]);
 
 // ─── 15. Game Logs Cache (synced from Middlewave) ───
 export const gameLogsCache = mysqlTable("game_logs_cache", {

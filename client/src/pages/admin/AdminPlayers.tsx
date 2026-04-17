@@ -479,7 +479,7 @@ function PlayerDetail({
       id: `bonus-${b.id}`,
       rawId: b.id,
       type: b.status === "forfeited" ? "forfeited" : "bonus",
-      amount: sn(b.bonusAmount),
+      amount: sn(b.awardedAmount ?? b.bonusAmount ?? 0),
       status: b.status || "active",
       time: b.claimedAt,
       ts: new Date(b.claimedAt).getTime(),

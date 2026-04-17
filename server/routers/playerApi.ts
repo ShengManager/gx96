@@ -496,13 +496,21 @@ export const playerApiRouter = router({
     }),
 
   claimBonus: publicProcedure
-    .input(z.object({ token: z.string(), bonusConfigId: z.number() }))
+    .input(z.object({
+      token: z.string(),
+      bonusConfigId: z.number(),
+      idempotencyKey: z.string().min(6).max(128).optional(),
+    }))
     .mutation(async ({ input, ctx }) => {
       const player = requirePlayer(ctx);
       const cycle = await db.getActiveCycle(player.id);
       const depositAmount = cycle ? parseFloat(cycle.depositAmount) : 0;
 
-      const result = await claimBonus(player.id, player.adminId!, input.bonusConfigId, depositAmount);
+      const result = await claimBonus(player.id, player.adminId!, input.bonusConfigId, depositAmount, {
+        idempotencyKey: input.idempotencyKey,
+        requestSource: "player_api",
+        sourceEvent: "player_claim",
+      });
       if (!result.success) throw new TRPCError({ code: "BAD_REQUEST", message: result.error });
       return result;
     }),

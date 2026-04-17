@@ -738,6 +738,8 @@ export const adminPlayersRouter = router({
           message: `Forfeited amount cannot exceed withdrawable balance (${withdrawableMax.toFixed(4)} MYR)`,
         });
       }
+      const forfeitAmount = Math.max(0, Math.min(input.amount, withdrawableMax));
+      const fullForfeitRequested = forfeitAmount + 0.0001 >= withdrawableMax;
 
       const kickState = await kickPlayerFromProvidersWithBalance(admin.adminId!, player);
       const recoveredProviderAmount = await withdrawAllProviderBalances(admin.adminId!, player);
@@ -758,6 +760,14 @@ export const adminPlayersRouter = router({
         );
 
       const forfeitedAmount = activeBonuses.reduce((sum, b) => sum + parseFloat(b.awardedAmount || "0"), 0);
+      const currentBonusAmount = parseFloat(cycle.bonusAmount || "0");
+      const nextBonusAmount = activeBonuses.length > 0
+        ? Math.max(0, currentBonusAmount - forfeitedAmount)
+        : currentBonusAmount;
+      const cycleTotalAfterBonusAdjustment = Math.max(0, parseFloat(cycle.depositAmount || "0") + nextBonusAmount);
+      const nextTotalWithdrawnRaw = parseFloat(cycle.totalWithdrawn || "0") + forfeitAmount;
+      const shouldCompleteCycle = fullForfeitRequested || (nextTotalWithdrawnRaw + 0.0001 >= cycleTotalAfterBonusAdjustment);
+      const finalTotalWithdrawn = shouldCompleteCycle ? cycleTotalAfterBonusAdjustment : nextTotalWithdrawnRaw;
 
       if (activeBonuses.length > 0) {
         await database
@@ -777,7 +787,7 @@ export const adminPlayersRouter = router({
         playerId: player.id,
         adminId: admin.adminId!,
         cycleId: cycle.id,
-        amount: input.amount.toFixed(4),
+        amount: forfeitAmount.toFixed(4),
         bankName: player.bankName || null,
         bankAccountName: player.bankAccountName || null,
         bankAccountNumber: player.bankAccountNumber || null,
@@ -793,15 +803,9 @@ export const adminPlayersRouter = router({
       await database
         .update(depositCycles)
         .set({
-          totalWithdrawn: (parseFloat(cycle.totalWithdrawn || "0") + input.amount).toFixed(4),
-          ...(activeBonuses.length > 0
-            ? {
-              bonusAmount: Math.max(0, parseFloat(cycle.bonusAmount || "0") - forfeitedAmount).toFixed(4),
-            }
-            : {}),
-          ...((parseFloat(cycle.totalWithdrawn || "0") + input.amount) >= (parseFloat(cycle.depositAmount || "0") + parseFloat(cycle.bonusAmount || "0"))
-            ? { status: "completed", completedAt: new Date() }
-            : {}),
+          totalWithdrawn: finalTotalWithdrawn.toFixed(4),
+          ...(activeBonuses.length > 0 ? { bonusAmount: nextBonusAmount.toFixed(4) } : {}),
+          ...(shouldCompleteCycle ? { status: "completed", completedAt: new Date() } : {}),
         })
         .where(eq(depositCycles.id, cycle.id));
 
@@ -816,6 +820,10 @@ export const adminPlayersRouter = router({
           forfeitedCount: activeBonuses.length,
           forfeitedAmount,
           inputAmount: input.amount,
+          appliedAmount: forfeitAmount,
+          fullForfeitRequested,
+          shouldCompleteCycle,
+          cycleTotalAfterBonusAdjustment,
           withdrawalId: wdRes.insertId,
           recoveredProviderAmount,
           kickedProviders: kickState.kickedProviders,
@@ -828,6 +836,8 @@ export const adminPlayersRouter = router({
         forfeitedCount: activeBonuses.length,
         forfeitedAmount,
         inputAmount: input.amount,
+        appliedAmount: forfeitAmount,
+        completedCycle: shouldCompleteCycle,
         withdrawalId: wdRes.insertId,
         recoveredProviderAmount,
       };

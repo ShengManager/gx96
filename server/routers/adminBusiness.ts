@@ -8,7 +8,7 @@ import {
   bonusConfigs, banners, telegramBots, telegramBotMessages,
   countryConfigs, adminAccounts, subAccountPermissions, adminLogs,
 } from "../../drizzle/schema";
-import { eq, and, desc, gte, lte } from "drizzle-orm";
+import { eq, and, desc, gte, lte, sql } from "drizzle-orm";
 import { startOfDayInTimezone, endOfDayInTimezone } from "../services/timezone";
 import { startBot, stopBot, restartBot, activeBots, getBotStatus, getAllBotStatuses } from "../services/telegramBot";
 import { getMiddlewaveConfig, getGameList, getProjectInfo, getActiveProviders } from "../services/middlewave";
@@ -137,6 +137,7 @@ export const adminBonusRouter = router({
       if (input.maxWithdraw !== undefined) updateData.maxWithdraw = input.maxWithdraw.toFixed(4);
       if (input.isActive !== undefined) updateData.isActive = input.isActive;
       if (input.sortOrder !== undefined) updateData.sortOrder = input.sortOrder;
+      updateData.ruleVersion = sql`${bonusConfigs.ruleVersion} + 1`;
 
       await database.update(bonusConfigs).set(updateData).where(and(eq(bonusConfigs.id, input.bonusId), eq(bonusConfigs.adminId, admin.adminId!)));
       await db.createAdminLog({ adminId: admin.id, action: "update_bonus", module: "bonus", targetId: input.bonusId, targetType: "bonus_config" });

@@ -1,70 +1,53 @@
 import { describe, expect, it } from "vitest";
+import { calculateBonusAmount, validateTime, type ClaimConfig } from "./bonus";
 
-// Test bonus calculation logic without DB
 describe("Bonus Calculation Logic", () => {
-  // Simulated bonus types
-  const calcBonus = (bonusType: number, depositAmount: number, config: any): number => {
-    switch (bonusType) {
-      case 0: // Fixed
-        return parseFloat(config.fixedAmount || "0");
-      case 1: // Percentage
-        const pct = parseFloat(config.percentage || "0") / 100;
-        let amount = depositAmount * pct;
-        if (config.maxBonus && amount > parseFloat(config.maxBonus)) {
-          amount = parseFloat(config.maxBonus);
-        }
-        return amount;
-      case 2: // Random
-        const min = parseFloat(config.randomMin || "0");
-        const max = parseFloat(config.randomMax || "0");
-        return min + Math.random() * (max - min);
-      default:
-        return 0;
-    }
-  };
-
   it("calculates fixed bonus correctly", () => {
-    const amount = calcBonus(0, 100, { fixedAmount: "50" });
+    const amount = calculateBonusAmount(0, 100, "50", null, null, null);
     expect(amount).toBe(50);
   });
 
   it("calculates percentage bonus correctly", () => {
-    const amount = calcBonus(1, 200, { percentage: "50" });
+    const amount = calculateBonusAmount(1, 200, null, "50", null, null);
     expect(amount).toBe(100);
   });
 
   it("caps percentage bonus at maxBonus", () => {
-    const amount = calcBonus(1, 1000, { percentage: "50", maxBonus: "100" });
+    const amount = calculateBonusAmount(1, 1000, null, "50", null, null, { maxBonus: 100 });
     expect(amount).toBe(100);
   });
 
-  it("calculates random bonus within range", () => {
-    const amount = calcBonus(2, 100, { randomMin: "10", randomMax: "50" });
-    expect(amount).toBeGreaterThanOrEqual(10);
-    expect(amount).toBeLessThanOrEqual(50);
+  it("random bonus with same seed is deterministic", () => {
+    const a = calculateBonusAmount(2, 100, null, null, "10", "50", { seed: "same-seed" });
+    const b = calculateBonusAmount(2, 100, null, null, "10", "50", { seed: "same-seed" });
+    expect(a).toBe(b);
+    expect(a).toBeGreaterThanOrEqual(10);
+    expect(a).toBeLessThanOrEqual(50);
   });
 
-  // Rollover calculation test
-  it("calculates rollover target correctly", () => {
-    const depositAmount = 100;
-    const bonusAmount = 50;
-    const rolloverMultiplier = 3;
-    const target = (depositAmount + bonusAmount) * rolloverMultiplier;
-    expect(target).toBe(450);
+  it("random bonus with different seed changes value", () => {
+    const a = calculateBonusAmount(2, 100, null, null, "10", "50", { seed: "seed-a" });
+    const b = calculateBonusAmount(2, 100, null, null, "10", "50", { seed: "seed-b" });
+    expect(a).not.toBe(b);
+  });
+});
+
+describe("Bonus Time Validation", () => {
+  it("rejects claim before start date", () => {
+    const config: ClaimConfig = {
+      startDate: "2099-01-01T00:00:00.000Z",
+    };
+    const result = validateTime(config, new Date("2026-01-01T00:00:00.000Z"));
+    expect(result.valid).toBe(false);
+    expect(result.reasonCode).toBe("BONUS_NOT_STARTED");
   });
 
-  // Claim eligibility check
-  it("validates minimum deposit condition", () => {
-    const minDeposit = 50;
-    const depositAmount = 30;
-    const eligible = depositAmount >= minDeposit;
-    expect(eligible).toBe(false);
-  });
-
-  it("validates maximum deposit condition", () => {
-    const maxDeposit = 500;
-    const depositAmount = 300;
-    const eligible = depositAmount <= maxDeposit;
-    expect(eligible).toBe(true);
+  it("rejects claim outside ClaimTime window", () => {
+    const config: ClaimConfig = {
+      ClaimTime: { start: "10:00", end: "11:00" },
+    };
+    const result = validateTime(config, new Date("2026-01-01T09:30:00.000Z"));
+    expect(result.valid).toBe(false);
+    expect(result.reasonCode).toBe("CLAIM_TIME_LOCKED");
   });
 });

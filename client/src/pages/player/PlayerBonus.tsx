@@ -9,7 +9,7 @@ import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Link } from "wouter";
 import {
-  Gift, Check, Loader2, Sparkles, Clock, Trophy,
+  Gift, Loader2, Sparkles, Clock, Trophy,
   ArrowRight, Percent, DollarSign, Shuffle, Target,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -28,10 +28,15 @@ export default function PlayerBonus() {
   );
 
   const claimMutation = trpc.player.claimBonus.useMutation({
-    onSuccess: () => {
+    onSuccess: (res: any) => {
       bonusListQuery.refetch();
       myBonusesQuery.refetch();
-      toast.success("Bonus claimed successfully!");
+      const amount = Number(res?.awardedAmount || 0);
+      if (res?.duplicate) {
+        toast.message(`Already claimed (deduplicated). Amount: MYR ${amount.toFixed(2)}`);
+      } else {
+        toast.success(`Bonus claimed: MYR ${amount.toFixed(2)}`);
+      }
       setSelectedBonus(null);
     },
     onError: (err: any) => toast.error(err.message),
@@ -81,7 +86,8 @@ export default function PlayerBonus() {
             </div>
           ) : bonuses.length > 0 ? (
             bonuses.map((bonus: any) => {
-              const hasClaimed = bonus.claimedByPlayer?.length > 0;
+              const canClaim = !!bonus.canClaim;
+              const blockedReason = String(bonus.claimBlockedReason || "Not eligible");
               return (
                 <Card
                   key={bonus.id}
@@ -95,10 +101,10 @@ export default function PlayerBonus() {
                       <div className="absolute bottom-3 left-3 right-3">
                         <h3 className="font-bold text-white text-sm">{bonus.name}</h3>
                       </div>
-                      {hasClaimed && (
+                      {!canClaim && (
                         <div className="absolute top-2 right-2">
-                          <span className="text-[10px] font-semibold px-2 py-1 rounded-full bg-green-500/90 text-white flex items-center gap-1">
-                            <Check className="w-3 h-3" /> Claimed
+                          <span className="text-[10px] font-semibold px-2 py-1 rounded-full bg-amber-500/90 text-white flex items-center gap-1">
+                            <Clock className="w-3 h-3" /> Unavailable
                           </span>
                         </div>
                       )}
@@ -116,10 +122,10 @@ export default function PlayerBonus() {
                         </div>
                         <Gift className="w-10 h-10 text-white/30" />
                       </div>
-                      {hasClaimed && (
+                      {!canClaim && (
                         <div className="absolute top-2 right-2">
-                          <span className="text-[10px] font-semibold px-2 py-1 rounded-full bg-green-500/90 text-white flex items-center gap-1">
-                            <Check className="w-3 h-3" /> Claimed
+                          <span className="text-[10px] font-semibold px-2 py-1 rounded-full bg-amber-500/90 text-white flex items-center gap-1">
+                            <Clock className="w-3 h-3" /> Unavailable
                           </span>
                         </div>
                       )}
@@ -154,6 +160,11 @@ export default function PlayerBonus() {
                         Details <ArrowRight className="w-3 h-3" />
                       </span>
                     </div>
+                    {!canClaim && (
+                      <p className="text-[10px] text-amber-500 mt-1 line-clamp-1">
+                        {blockedReason}
+                      </p>
+                    )}
                   </CardContent>
                 </Card>
               );
@@ -260,6 +271,19 @@ export default function PlayerBonus() {
           )}
 
           <div className="p-5 space-y-4">
+            {(() => {
+              const claimCfg = (selectedBonus?.claimConfig || {}) as any;
+              const hasClaimWindow = !!(claimCfg.startDate || claimCfg.endDate);
+              const claimLimitText =
+                claimCfg.ClaimLimit && Number(claimCfg.ClaimLimit) > 0
+                  ? `${claimCfg.ClaimLimit} / ${claimCfg.ClaimReset || "all-time"}`
+                  : (claimCfg.ClaimReset && claimCfg.ClaimReset !== "none" ? `1 / ${claimCfg.ClaimReset}` : "Unlimited");
+              const tagText = Array.isArray(claimCfg.excludeTags) && claimCfg.excludeTags.length > 0
+                ? claimCfg.excludeTags.join(", ")
+                : "None";
+
+              return (
+                <>
             <DialogHeader className="p-0">
               <DialogTitle className="text-lg">{selectedBonus?.name}</DialogTitle>
             </DialogHeader>
@@ -293,7 +317,7 @@ export default function PlayerBonus() {
               {selectedBonus?.turnoverTarget && (
                 <div className="p-3 rounded-xl bg-muted/50">
                   <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Turnover</p>
-                  <p className="text-sm font-semibold mt-0.5">MYR {parseFloat(selectedBonus.turnoverTarget).toFixed(2)}</p>
+                  <p className="text-sm font-semibold mt-0.5">x{parseFloat(selectedBonus.turnoverTarget).toFixed(2)}</p>
                 </div>
               )}
               {selectedBonus?.maxWithdraw && (
@@ -302,22 +326,47 @@ export default function PlayerBonus() {
                   <p className="text-sm font-semibold mt-0.5">MYR {parseFloat(selectedBonus.maxWithdraw).toFixed(2)}</p>
                 </div>
               )}
-              {selectedBonus?.minDeposit && (
+              {claimCfg?.minDeposit && Number(claimCfg.minDeposit) > 0 && (
                 <div className="p-3 rounded-xl bg-muted/50">
                   <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Min Deposit</p>
-                  <p className="text-sm font-semibold mt-0.5">MYR {parseFloat(selectedBonus.minDeposit).toFixed(2)}</p>
+                  <p className="text-sm font-semibold mt-0.5">MYR {parseFloat(claimCfg.minDeposit).toFixed(2)}</p>
                 </div>
               )}
             </div>
 
+            {/* Claim conditions */}
+            <div className="rounded-xl border border-white/10 bg-muted/30 p-3 space-y-1.5">
+              <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Claim Conditions</p>
+              <p className="text-xs">Limit: <span className="font-medium">{claimLimitText}</span></p>
+              {claimCfg?.ClaimTime?.start && claimCfg?.ClaimTime?.end && (
+                <p className="text-xs">
+                  Claim Time (UTC): <span className="font-medium">{claimCfg.ClaimTime.start} - {claimCfg.ClaimTime.end}</span>
+                </p>
+              )}
+              {claimCfg?.depositTarget && Number(claimCfg.depositTarget) > 0 && (
+                <p className="text-xs">
+                  Deposit Target: <span className="font-medium">{claimCfg.depositTarget} times</span>
+                </p>
+              )}
+              {(Number(claimCfg?.vipLevelMin || 0) > 0 || Number(claimCfg?.vipLevelMax || 0) > 0) && (
+                <p className="text-xs">
+                  VIP Range: <span className="font-medium">
+                    {Number(claimCfg?.vipLevelMin || 0)} - {Number(claimCfg?.vipLevelMax || 0) > 0 ? Number(claimCfg.vipLevelMax) : "∞"}
+                  </span>
+                </p>
+              )}
+              <p className="text-xs">Require KYC: <span className="font-medium">{claimCfg?.requireKyc ? "Yes" : "No"}</span></p>
+              <p className="text-xs">Exclude Tags: <span className="font-medium">{tagText}</span></p>
+            </div>
+
             {/* Time info */}
-            {(selectedBonus?.startDate || selectedBonus?.endDate) && (
+            {hasClaimWindow && (
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <Clock className="w-3.5 h-3.5" />
                 <span>
-                  {selectedBonus.startDate && `From ${new Date(selectedBonus.startDate).toLocaleDateString()}`}
-                  {selectedBonus.startDate && selectedBonus.endDate && " — "}
-                  {selectedBonus.endDate && `Until ${new Date(selectedBonus.endDate).toLocaleDateString()}`}
+                  {claimCfg.startDate && `From ${new Date(claimCfg.startDate).toLocaleDateString()}`}
+                  {claimCfg.startDate && claimCfg.endDate && " — "}
+                  {claimCfg.endDate && `Until ${new Date(claimCfg.endDate).toLocaleDateString()}`}
                 </span>
               </div>
             )}
@@ -325,23 +374,26 @@ export default function PlayerBonus() {
             <Button
               className="w-full h-12 rounded-xl text-base"
               style={{
-                background: selectedBonus?.claimedByPlayer?.length > 0
-                  ? undefined
-                  : "linear-gradient(135deg, #6366f1 0%, #a855f7 100%)",
+                background: selectedBonus?.canClaim
+                  ? "linear-gradient(135deg, #6366f1 0%, #a855f7 100%)"
+                  : undefined,
               }}
-              variant={selectedBonus?.claimedByPlayer?.length > 0 ? "secondary" : "default"}
-              disabled={selectedBonus?.claimedByPlayer?.length > 0 || claimMutation.isPending}
+              variant={selectedBonus?.canClaim ? "default" : "secondary"}
+              disabled={!selectedBonus?.canClaim || claimMutation.isPending}
               onClick={() => claimMutation.mutate({ token: accessToken!, bonusConfigId: selectedBonus.id })}
             >
               {claimMutation.isPending ? (
                 <Loader2 className="w-5 h-5 animate-spin mr-2" />
-              ) : selectedBonus?.claimedByPlayer?.length > 0 ? (
-                <Check className="w-5 h-5 mr-2" />
-              ) : (
+              ) : selectedBonus?.canClaim ? (
                 <Sparkles className="w-5 h-5 mr-2" />
+              ) : (
+                <Clock className="w-5 h-5 mr-2" />
               )}
-              {selectedBonus?.claimedByPlayer?.length > 0 ? "Already Claimed" : "Claim Bonus"}
+              {selectedBonus?.canClaim ? "Claim Bonus" : (selectedBonus?.claimBlockedReason || "Not eligible")}
             </Button>
+                </>
+              );
+            })()}
           </div>
         </DialogContent>
       </Dialog>
