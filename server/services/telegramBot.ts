@@ -616,12 +616,15 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
     } catch {}
 
     try {
+      const render = async (text: string, options?: any) =>
+        upsertCallbackView(bot, query, chatId, text, options);
+
       // ─── Register ───
       if (data.startsWith("register:")) {
         const inviteCode = data.split(":")[1];
         if (inviteCode) pendingRegistrations.set(chatId, inviteCode);
 
-        await sendAndTrack(bot, chatId, "📱 Please share your phone number to register:", {
+        await render("📱 Please share your phone number to register:", {
           reply_markup: {
             keyboard: [
               [{ text: "📱 Share Phone Number", request_contact: true }],
@@ -781,25 +784,23 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
 
       // Main menu
       if (data === "main_menu") {
-        await cleanupMessages(bot, chatId, 0);
         clearChatPendingState(chatId);
-        await showMainMenu(bot, chatId, player, botConfig);
+        await showMainMenu(bot, chatId, player, botConfig, query);
         return;
       }
 
       // ─── Deposit ───
       if (data === "deposit") {
-        await cleanupMessages(bot, chatId, 0);
         const check = await canCreateDeposit(player.id);
         if (!check.allowed) {
-          await sendAndTrack(bot, chatId, `❌ Cannot deposit: ${check.reason}\n\nPlease complete your current cycle first.`, {
+          await render(`❌ Cannot deposit: ${check.reason}\n\nPlease complete your current cycle first.`, {
             reply_markup: { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "main_menu" }]] },
           });
           return;
         }
         const banks = await db.getDepositBanks(adminId);
         if (banks.length === 0) {
-          await sendAndTrack(bot, chatId, "❌ No deposit banks configured. Please contact support.", {
+          await render("❌ No deposit banks configured. Please contact support.", {
             reply_markup: { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "main_menu" }]] },
           });
           return;
@@ -814,14 +815,14 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         }
         text += "After transferring, select the bank you used:";
         bankButtons.push([{ text: "⬅️ Back", callback_data: "main_menu" }]);
-        await sendAndTrack(bot, chatId, text, { reply_markup: { inline_keyboard: bankButtons } });
+        await render(text, { reply_markup: { inline_keyboard: bankButtons } });
         return;
       }
 
       if (data.startsWith("deposit_bank:")) {
         const bankId = parseInt(data.split(":")[1]);
         pendingDeposits.set(chatId, { bankId, playerId: player.id, adminId, awaitingReceipt: false });
-        await sendAndTrack(bot, chatId, "💰 Please enter the deposit amount:", {
+        await render("💰 Please enter the deposit amount:", {
           reply_markup: { inline_keyboard: [[{ text: "❌ Cancel", callback_data: "main_menu" }]] },
         });
         return;
@@ -829,20 +830,19 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
 
       // ─── Withdraw ───
       if (data === "withdraw") {
-        await cleanupMessages(bot, chatId, 0);
         const check = await checkWithdrawalConditions(player.id);
         if (!check.canWithdraw) {
           let text = `❌ Cannot withdraw yet.\n\n`;
           if (check.reason) text += `Reason: ${check.reason}\n`;
           if (check.rolloverProgress) text += `Rollover: ${check.rolloverProgress.percentage.toFixed(1)}%\n`;
           if (check.turnoverProgress) text += `Turnover: ${check.turnoverProgress.percentage.toFixed(1)}%\n`;
-          await sendAndTrack(bot, chatId, text, {
+          await render(text, {
             reply_markup: { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "main_menu" }]] },
           });
           return;
         }
         pendingWithdrawals.set(chatId, { playerId: player.id, adminId });
-        await sendAndTrack(bot, chatId, `💸 <b>Withdraw</b>\n\nPlease enter the withdrawal amount:`, {
+        await render(`💸 <b>Withdraw</b>\n\nPlease enter the withdrawal amount:`, {
           reply_markup: { inline_keyboard: [[{ text: "❌ Cancel", callback_data: "main_menu" }]] },
         });
         return;
@@ -850,7 +850,6 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
 
       // ─── Games ───
       if (data === "games") {
-        await cleanupMessages(bot, chatId, 0);
         const autoLoginToken = generateAutoLoginToken(player.id, player.adminId || adminId);
         const webLink = await resolvePlayerAutoLoginUrl(adminId, botConfig, autoLoginToken);
 
@@ -894,7 +893,7 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         const autoLoginToken = generateAutoLoginToken(player.id, player.adminId || adminId);
         const webLink = await resolvePlayerAutoLoginUrl(adminId, botConfig, autoLoginToken);
         if (!webLink) {
-          await sendAndTrack(bot, chatId, "❌ Frontend URL is not configured. Please contact support.", {
+          await render("❌ Frontend URL is not configured. Please contact support.", {
             reply_markup: { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "main_menu" }]] },
           });
           return;
@@ -1043,10 +1042,9 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
 
       // ─── Bonus ───
       if (data === "bonus") {
-        await cleanupMessages(bot, chatId, 0);
         const bonuses = await db.getActiveBonusesByAdmin(adminId);
         if (bonuses.length === 0) {
-          await sendAndTrack(bot, chatId, "🎁 No bonuses available.", {
+          await render("🎁 No bonuses available.", {
             reply_markup: { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "main_menu" }]] },
           });
           return;
@@ -1061,7 +1059,7 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         }
         buttons.push([{ text: "⬅️ Back", callback_data: "main_menu" }]);
 
-        await sendAndTrack(bot, chatId, "🎁 <b>Available Bonuses</b>\n\nSelect a bonus to claim:", {
+        await render("🎁 <b>Available Bonuses</b>\n\nSelect a bonus to claim:", {
           reply_markup: { inline_keyboard: buttons },
         });
         return;
@@ -1084,11 +1082,11 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
           },
         });
         if (result.success) {
-          await sendAndTrack(bot, chatId, `✅ <b>Bonus Claimed!</b>\n\nAmount: $${(result.awardedAmount || 0).toFixed(2)}`, {
+          await render(`✅ <b>Bonus Claimed!</b>\n\nAmount: $${(result.awardedAmount || 0).toFixed(2)}`, {
             reply_markup: { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "bonus" }]] },
           });
         } else {
-          await sendAndTrack(bot, chatId, `❌ ${result.error}`, {
+          await render(`❌ ${result.error}`, {
             reply_markup: { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "bonus" }]] },
           });
         }
@@ -1097,8 +1095,7 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
 
       // ─── Settings ───
       if (data === "settings") {
-        await cleanupMessages(bot, chatId, 0);
-        await sendAndTrack(bot, chatId, `⚙️ <b>Settings</b>\n\n` +
+        await render(`⚙️ <b>Settings</b>\n\n` +
           `👤 Username: <code>${player.username}</code>\n` +
           `📱 Phone: ${player.phone}\n` +
           `🏦 Bank: ${player.bankName || "Not set"}\n` +
@@ -1115,7 +1112,7 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
 
       if (data === "share_invite") {
         const shareText = `🎮 Join me on ${botConfig.botName || "TgGaming"}!\n\nUse my invite code: ${player.inviteCode}\n\nhttps://t.me/${botConfig.botUsername}?start=${player.inviteCode}`;
-        await sendAndTrack(bot, chatId, shareText, {
+        await render(shareText, {
           reply_markup: { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "settings" }]] },
         });
         return;
@@ -1123,8 +1120,7 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
 
       // ─── Balance ───
       if (data === "balance") {
-        await cleanupMessages(bot, chatId, 0);
-        await sendAndTrack(bot, chatId, `💰 <b>Your Balance</b>\n\nMain: $${parseFloat(player.balance || "0").toFixed(2)}`, {
+        await render(`💰 <b>Your Balance</b>\n\nMain: $${parseFloat(player.balance || "0").toFixed(2)}`, {
           reply_markup: { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "main_menu" }]] },
         });
         return;
@@ -1262,13 +1258,10 @@ async function showMainMenu(
   bot: TelegramBot,
   chatId: number,
   player: any,
-  botConfig: any
+  botConfig: any,
+  query?: TelegramBot.CallbackQuery
 ) {
   const balance = parseFloat(player.balance || "0").toFixed(2);
-
-  // Generate auto-login token for web access
-  const autoLoginToken = generateAutoLoginToken(player.id, player.adminId || botConfig.adminId);
-  const webLink = await resolvePlayerAutoLoginUrl(player.adminId || botConfig.adminId, botConfig, autoLoginToken);
 
   const text =
     `🎮 <b>${botConfig.botName || "TgGaming"}</b>\n\n` +
@@ -1290,6 +1283,12 @@ async function showMainMenu(
     ],
   ];
 
+  if (query) {
+    await upsertCallbackView(bot, query, chatId, text, {
+      reply_markup: { inline_keyboard: keyboard },
+    });
+    return;
+  }
   await sendAndTrack(bot, chatId, text, {
     reply_markup: { inline_keyboard: keyboard },
   });
