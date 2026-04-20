@@ -44,6 +44,8 @@ const activeBots = new Map<number, TelegramBot>();
 
 // Track messages for cleanup: Map<chatId, messageId[]>
 const chatMessages = new Map<number, number[]>();
+// Prevent duplicate /start handling (e.g. webhook retry / duplicated update delivery)
+const recentStartEvents = new Map<number, { messageId: number; at: number }>();
 
 // Bot diagnostic info: Map<botId, DiagnosticInfo>
 interface BotDiagnosticInfo {
@@ -339,6 +341,28 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
     const chatId = msg.chat.id;
     const telegramId = msg.from?.id?.toString() || "";
     const inviteParam = match?.[1]?.trim();
+    const now = Date.now();
+    const eventMessageId = msg.message_id || 0;
+
+    // Deduplicate /start to avoid duplicate main menu messages.
+    // This guards repeated delivery of the same update or rapid duplicate triggers.
+    const lastStart = recentStartEvents.get(chatId);
+    if (
+      lastStart &&
+      (lastStart.messageId === eventMessageId || now - lastStart.at < 2500)
+    ) {
+      console.log(
+        `[${botLabel}] ⏭️ Skip duplicate /start in chat ${chatId} (msgId=${eventMessageId})`
+      );
+      return;
+    }
+    recentStartEvents.set(chatId, { messageId: eventMessageId, at: now });
+    if (recentStartEvents.size > 5000) {
+      // Lightweight cleanup to keep memory bounded.
+      recentStartEvents.forEach((rec, cid) => {
+        if (now - rec.at > 10 * 60 * 1000) recentStartEvents.delete(cid);
+      });
+    }
 
     trackMessage(chatId, msg.message_id);
 
