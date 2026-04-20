@@ -48,6 +48,8 @@ const chatMessages = new Map<number, number[]>();
 const recentStartEvents = new Map<number, { messageId: number; at: number }>();
 // Prevent duplicate callback handling (same click/update delivered multiple times)
 const recentCallbackEvents = new Map<number, { queryId: string; data: string; at: number }>();
+const START_DEDUPE_WINDOW_MS = 10_000;
+const CALLBACK_DEDUPE_WINDOW_MS = 8_000;
 
 // Bot diagnostic info: Map<botId, DiagnosticInfo>
 interface BotDiagnosticInfo {
@@ -383,7 +385,7 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
     const lastStart = recentStartEvents.get(chatId);
     if (
       lastStart &&
-      (lastStart.messageId === eventMessageId || now - lastStart.at < 2500)
+      (lastStart.messageId === eventMessageId || now - lastStart.at < START_DEDUPE_WINDOW_MS)
     ) {
       console.log(
         `[${botLabel}] ⏭️ Skip duplicate /start in chat ${chatId} (msgId=${eventMessageId})`
@@ -559,7 +561,7 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
     const lastCallback = recentCallbackEvents.get(chatId);
     if (
       lastCallback &&
-      (lastCallback.queryId === query.id || (lastCallback.data === data && now - lastCallback.at < 2000))
+      (lastCallback.queryId === query.id || (lastCallback.data === data && now - lastCallback.at < CALLBACK_DEDUPE_WINDOW_MS))
     ) {
       console.log(
         `[${botLabel}] ⏭️ Skip duplicate callback in chat ${chatId} (id=${query.id}, data=${data})`
@@ -821,7 +823,6 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         const frontend = await db.getFrontendSettings(adminId);
         let customTitle = "🎮 <b>Game Center</b>";
         let customDesc = "Choose how you want to play games:";
-        let openText = "🌐 Open Frontend";
         let continueText = "🚀 Continue & Login";
         const raw = (frontend as any)?.layoutInjections?.game?.dataJson;
         if (typeof raw === "string" && raw.trim()) {
@@ -829,27 +830,21 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
             const cfg = JSON.parse(raw);
             customTitle = String(cfg.title || customTitle);
             customDesc = String(cfg.description || customDesc);
-            openText = String(cfg.openText || openText);
             continueText = String(cfg.continueText || continueText);
           } catch {}
         } else if (raw && typeof raw === "object") {
           const cfg: any = raw;
           customTitle = String(cfg.title || customTitle);
           customDesc = String(cfg.description || customDesc);
-          openText = String(cfg.openText || openText);
           continueText = String(cfg.continueText || continueText);
         }
 
         const keyboard: any[][] = [];
-        // Continue now means direct frontend auto-login.
+        // Continue means direct frontend auto-login.
         if (webLink) {
           keyboard.push([{ text: continueText, url: webLink }]);
         } else {
           keyboard.push([{ text: continueText, callback_data: "games_open_frontend" }]);
-        }
-        // Keep optional explicit open button for compatibility with existing admin config text.
-        if (webLink && openText && openText !== continueText) {
-          keyboard.push([{ text: openText, url: webLink }]);
         }
         keyboard.push([{ text: "⬅️ Back", callback_data: "main_menu" }]);
         await sendAndTrack(bot, chatId, `${customTitle}\n\n${customDesc}`, {
@@ -870,10 +865,10 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
           });
           return;
         }
-        await sendAndTrack(bot, chatId, "🌐 <b>Open Frontend</b>\n\nTap below to login directly:", {
+        await sendAndTrack(bot, chatId, "🎮 <b>Game Center</b>\n\nChoose how you want to play games:", {
           reply_markup: {
             inline_keyboard: [
-              [{ text: "🚀 Open & Auto Login", url: webLink }],
+              [{ text: "🚀 Continue & Login", url: webLink }],
               [{ text: "⬅️ Back", callback_data: "main_menu" }],
             ],
           },
@@ -1260,11 +1255,6 @@ async function showMainMenu(
       { text: "⚙️ Settings", callback_data: "settings" },
     ],
   ];
-
-  // Add web link button if frontend URL is configured
-  if (webLink) {
-    keyboard.push([{ text: "🌐 Open Web App", url: webLink }]);
-  }
 
   await sendAndTrack(bot, chatId, text, {
     reply_markup: { inline_keyboard: keyboard },
