@@ -254,13 +254,13 @@ function trackMessage(chatId: number, messageId: number) {
 
 async function cleanupMessages(bot: TelegramBot, chatId: number, keepLast = 1) {
   const msgs = chatMessages.get(chatId) || [];
-  const toDelete = msgs.slice(0, -keepLast);
+  const toDelete = keepLast <= 0 ? [...msgs] : msgs.slice(0, -keepLast);
   for (const msgId of toDelete) {
     try {
       await bot.deleteMessage(chatId, msgId);
     } catch {}
   }
-  chatMessages.set(chatId, msgs.slice(-keepLast));
+  chatMessages.set(chatId, keepLast <= 0 ? [] : msgs.slice(-keepLast));
 }
 
 async function sendAndTrack(
