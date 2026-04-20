@@ -790,8 +790,16 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         }
 
         const keyboard: any[][] = [];
-        if (webLink) keyboard.push([{ text: openText, url: webLink }]);
-        keyboard.push([{ text: continueText, callback_data: "games_providers" }]);
+        // Continue now means direct frontend auto-login.
+        if (webLink) {
+          keyboard.push([{ text: continueText, url: webLink }]);
+        } else {
+          keyboard.push([{ text: continueText, callback_data: "games_open_frontend" }]);
+        }
+        // Keep optional explicit open button for compatibility with existing admin config text.
+        if (webLink && openText && openText !== continueText) {
+          keyboard.push([{ text: openText, url: webLink }]);
+        }
         keyboard.push([{ text: "⬅️ Back", callback_data: "main_menu" }]);
         await sendAndTrack(bot, chatId, `${customTitle}\n\n${customDesc}`, {
           reply_markup: { inline_keyboard: keyboard },
@@ -799,7 +807,31 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         return;
       }
 
-      if (data === "games_providers") {
+      if (data === "games_open_frontend" || data === "games_providers") {
+        // Backward compatibility:
+        // old button "games_providers" should no longer open provider list,
+        // it should direct user to frontend auto-login flow.
+        const autoLoginToken = generateAutoLoginToken(player.id, player.adminId || adminId);
+        const webBaseUrl = botConfig.frontendUrl || process.env.FRONTEND_URL || "";
+        const webLink = webBaseUrl ? `${webBaseUrl}?token=${autoLoginToken}` : "";
+        if (!webLink) {
+          await sendAndTrack(bot, chatId, "❌ Frontend URL is not configured. Please contact support.", {
+            reply_markup: { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "main_menu" }]] },
+          });
+          return;
+        }
+        await sendAndTrack(bot, chatId, "🌐 <b>Open Frontend</b>\n\nTap below to login directly:", {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🚀 Open & Auto Login", url: webLink }],
+              [{ text: "⬅️ Back", callback_data: "main_menu" }],
+            ],
+          },
+        });
+        return;
+      }
+
+      if (data === "games_providers_legacy") {
         const config = await getMiddlewaveConfig(adminId);
         if (!config) {
           await sendAndTrack(bot, chatId, "❌ Games not configured. Contact support.", {
