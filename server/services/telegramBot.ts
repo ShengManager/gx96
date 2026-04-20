@@ -46,6 +46,8 @@ const activeBots = new Map<number, TelegramBot>();
 const chatMessages = new Map<number, number[]>();
 // Prevent duplicate /start handling (e.g. webhook retry / duplicated update delivery)
 const recentStartEvents = new Map<number, { messageId: number; at: number }>();
+// Prevent duplicate callback handling (same click/update delivered multiple times)
+const recentCallbackEvents = new Map<number, { queryId: string; data: string; at: number }>();
 
 // Bot diagnostic info: Map<botId, DiagnosticInfo>
 interface BotDiagnosticInfo {
@@ -277,6 +279,38 @@ async function sendAndTrack(
   });
   trackMessage(chatId, msg.message_id);
   return msg;
+}
+
+function buildLoginUrlFromBase(base: string, token: string): string {
+  const raw = String(base || "").trim();
+  if (!raw) return "";
+  const normalized = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const u = new URL(normalized);
+    u.pathname = "/login";
+    u.search = `token=${encodeURIComponent(token)}`;
+    u.hash = "";
+    return u.toString();
+  } catch {
+    return "";
+  }
+}
+
+async function resolvePlayerAutoLoginUrl(adminId: number, botConfig: any, token: string): Promise<string> {
+  const fromBot = buildLoginUrlFromBase((botConfig as any)?.frontendUrl || "", token);
+  if (fromBot) return fromBot;
+
+  try {
+    const acl = await db.getDomainAcl(adminId);
+    const playerDomain = acl.find((d: any) => d.isActive && (d.purpose === "player" || d.purpose === "both"))?.domain;
+    const fromAcl = buildLoginUrlFromBase(playerDomain || "", token);
+    if (fromAcl) return fromAcl;
+  } catch {}
+
+  const fromEnv = buildLoginUrlFromBase(process.env.FRONTEND_URL || "", token);
+  if (fromEnv) return fromEnv;
+
+  return "";
 }
 
 // ─── Handler Registration ───
@@ -520,6 +554,24 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
     if (!chatId) return;
     const telegramId = query.from.id.toString();
     const data = query.data || "";
+    const now = Date.now();
+
+    const lastCallback = recentCallbackEvents.get(chatId);
+    if (
+      lastCallback &&
+      (lastCallback.queryId === query.id || (lastCallback.data === data && now - lastCallback.at < 2000))
+    ) {
+      console.log(
+        `[${botLabel}] ⏭️ Skip duplicate callback in chat ${chatId} (id=${query.id}, data=${data})`
+      );
+      return;
+    }
+    recentCallbackEvents.set(chatId, { queryId: query.id, data, at: now });
+    if (recentCallbackEvents.size > 5000) {
+      recentCallbackEvents.forEach((rec, cid) => {
+        if (now - rec.at > 10 * 60 * 1000) recentCallbackEvents.delete(cid);
+      });
+    }
 
     console.log(`[${botLabel}] 🔘 Callback: "${data}" from ${telegramId}`);
 
@@ -764,14 +816,13 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
       if (data === "games") {
         await cleanupMessages(bot, chatId, 0);
         const autoLoginToken = generateAutoLoginToken(player.id, player.adminId || adminId);
-        const webBaseUrl = botConfig.frontendUrl || process.env.FRONTEND_URL || "";
-        const webLink = webBaseUrl ? `${webBaseUrl}?token=${autoLoginToken}` : "";
+        const webLink = await resolvePlayerAutoLoginUrl(adminId, botConfig, autoLoginToken);
 
         const frontend = await db.getFrontendSettings(adminId);
         let customTitle = "🎮 <b>Game Center</b>";
         let customDesc = "Choose how you want to play games:";
         let openText = "🌐 Open Frontend";
-        let continueText = "🎮 Continue in Telegram";
+        let continueText = "🚀 Continue & Login";
         const raw = (frontend as any)?.layoutInjections?.game?.dataJson;
         if (typeof raw === "string" && raw.trim()) {
           try {
@@ -812,8 +863,7 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         // old button "games_providers" should no longer open provider list,
         // it should direct user to frontend auto-login flow.
         const autoLoginToken = generateAutoLoginToken(player.id, player.adminId || adminId);
-        const webBaseUrl = botConfig.frontendUrl || process.env.FRONTEND_URL || "";
-        const webLink = webBaseUrl ? `${webBaseUrl}?token=${autoLoginToken}` : "";
+        const webLink = await resolvePlayerAutoLoginUrl(adminId, botConfig, autoLoginToken);
         if (!webLink) {
           await sendAndTrack(bot, chatId, "❌ Frontend URL is not configured. Please contact support.", {
             reply_markup: { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "main_menu" }]] },
@@ -1189,8 +1239,7 @@ async function showMainMenu(
 
   // Generate auto-login token for web access
   const autoLoginToken = generateAutoLoginToken(player.id, player.adminId || botConfig.adminId);
-  const webBaseUrl = botConfig.frontendUrl || process.env.FRONTEND_URL || "";
-  const webLink = webBaseUrl ? `${webBaseUrl}?token=${autoLoginToken}` : "";
+  const webLink = await resolvePlayerAutoLoginUrl(player.adminId || botConfig.adminId, botConfig, autoLoginToken);
 
   const text =
     `🎮 <b>${botConfig.botName || "TgGaming"}</b>\n\n` +
