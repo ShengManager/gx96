@@ -370,6 +370,51 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
     pendingWithdrawals.delete(chatId);
   };
 
+  const sendBankSelectionPrompt = async (chatId: number) => {
+    const pending = pendingBankSelection.get(chatId);
+    if (!pending) return;
+
+    const bankList = await db.getBankCatalog("MY");
+    if (bankList.length === 0) {
+      pending.stage = "awaiting_bank_name_manual";
+      pending.selectedBankName = null;
+      pending.selectedBankCode = null;
+      pending.bankAccountName = "";
+      pending.bankAccountNumber = "";
+      pendingBankSelection.set(chatId, pending);
+      await sendAndTrack(
+        bot,
+        chatId,
+        "🏦 <b>Bank list unavailable</b>\n\nPlease type your bank name manually:",
+        {
+          reply_markup: {
+            inline_keyboard: [[{ text: "❌ Cancel", callback_data: "main_menu" }]],
+          },
+        }
+      );
+      return;
+    }
+
+    pending.stage = "select_bank";
+    pending.selectedBankName = null;
+    pending.selectedBankCode = null;
+    pending.bankAccountName = "";
+    pending.bankAccountNumber = "";
+    pendingBankSelection.set(chatId, pending);
+
+    const bankButtons: any[] = [];
+    for (const bank of bankList) {
+      bankButtons.push([
+        { text: `🏦 ${bank.bankName}`, callback_data: `reg_bank:${bank.bankCode}:${bank.bankName}` },
+      ]);
+    }
+    bankButtons.push([{ text: "❌ Cancel", callback_data: "main_menu" }]);
+
+    await sendAndTrack(bot, chatId, "🏦 <b>Select Bank</b>\n\nBank selection is required.", {
+      reply_markup: { inline_keyboard: bankButtons },
+    });
+  };
+
   // Global error handlers with diagnostic tracking + auto-recovery
   let consecutiveErrors = 0;
   bot.on('polling_error', (err: any) => {
@@ -537,53 +582,18 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         lastName: msg.from?.last_name || "",
         username: msg.from?.username || "",
         inviteCode: pendingInvite || undefined,
+        selectedBankName: null,
+        selectedBankCode: null,
+        bankAccountName: "",
+        bankAccountNumber: "",
+        stage: "select_bank",
       });
       pendingRegistrations.delete(chatId);
-
-      // Fetch bank catalog for Malaysia
-      const bankList = await db.getBankCatalog("MY");
-      if (bankList.length > 0) {
-        const bankButtons: any[] = [];
-        for (const bank of bankList) {
-          bankButtons.push([{ text: `🏦 ${bank.bankName}`, callback_data: `reg_bank:${bank.bankCode}:${bank.bankName}` }]);
-        }
-        bankButtons.push([{ text: "⏭️ Skip (set later)", callback_data: "reg_bank:skip:" }]);
-
-        await sendAndTrack(bot, chatId, "📱 Phone verified! \n\n🏦 <b>Select your bank (optional):</b>\n\nYou can skip now and set bank details later in Settings.", {
-          reply_markup: { remove_keyboard: true },
-        });
-        await sendAndTrack(bot, chatId, "🏦 <b>Select Bank</b>", {
-          reply_markup: { inline_keyboard: bankButtons },
-        });
-      } else {
-        // No bank catalog, register directly
-        const player = await registerPlayerFromTelegram(
-          adminId,
-          telegramId,
-          phone,
-          msg.from?.first_name || "",
-          msg.from?.last_name || "",
-          msg.from?.username || "",
-          pendingInvite || undefined
-        );
-
-        const displayWelcome =
-          [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(" ").trim() ||
-          msg.from?.first_name ||
-          "Player";
-        await sendAndTrack(
-          bot,
-          chatId,
-          `✅ <b>Registration Successful!</b>\n\n` +
-            `Welcome, ${displayWelcome}!\n` +
-            `Your username: <code>${player.username}</code>\n` +
-            `Your invite code: <code>${player.inviteCode}</code>\n\n` +
-            `Share your invite code with friends!`,
-          { reply_markup: { remove_keyboard: true } }
-        );
-
-        await showMainMenu(bot, chatId, player, botConfig);
-      }
+      await cleanupMessages(bot, chatId, 0);
+      await sendAndTrack(bot, chatId, "📱 Phone verified! \n\n🏦 <b>Bank details are required.</b>", {
+        reply_markup: { remove_keyboard: true },
+      });
+      await sendBankSelectionPrompt(chatId);
     } catch (err: any) {
       console.error(`[${botLabel}] Error handling contact: ${err.message}`);
       await sendAndTrack(bot, chatId, `❌ Registration failed: ${err.message}`, {
@@ -630,7 +640,10 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
       // ─── Register ───
       if (data.startsWith("register:")) {
         const inviteCode = data.split(":")[1];
+        clearChatPendingState(chatId);
         if (inviteCode) pendingRegistrations.set(chatId, inviteCode);
+        else pendingRegistrations.delete(chatId);
+        await cleanupMessages(bot, chatId, 0);
 
         await render("📱 Please share your phone number to register:", {
           reply_markup: {
@@ -656,24 +669,29 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
           return;
         }
 
-        const selectedBank = bankCode === "skip" ? null : bankName;
+        const selectedBank = bankName.trim();
+        if (!selectedBank) {
+          await sendAndTrack(bot, chatId, "❌ Invalid bank selected. Please choose again.");
+          return;
+        }
         pendingBankSelection.set(chatId, {
           ...pending,
           selectedBankName: selectedBank,
-          selectedBankCode: bankCode === "skip" ? null : bankCode,
+          selectedBankCode: bankCode || null,
+          bankAccountName: "",
+          bankAccountNumber: "",
+          stage: "awaiting_account_name",
         });
 
+        await cleanupMessages(bot, chatId, 0);
         await sendAndTrack(
           bot,
           chatId,
-          `🧾 <b>Confirm Registration</b>\n\n` +
-            `Phone: <code>${pending.phone}</code>\n` +
-            `Bank: ${selectedBank || "Skip for now"}\n\n` +
-            `You can confirm now or re-select your bank.`,
+          `🏦 Selected bank: <b>${selectedBank}</b>\n\n` +
+            `✍️ Please enter your bank account name:`,
           {
             reply_markup: {
               inline_keyboard: [
-                [{ text: "✅ Confirm Registration", callback_data: "reg_confirm" }],
                 [{ text: "🏦 Re-select Bank", callback_data: "reg_reselect_bank" }],
                 [{ text: "❌ Cancel", callback_data: "main_menu" }],
               ],
@@ -689,21 +707,39 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
           await sendAndTrack(bot, chatId, "❌ Registration session expired. Please /start again.");
           return;
         }
-        const bankList = await db.getBankCatalog("MY");
-        if (bankList.length === 0) {
-          await sendAndTrack(bot, chatId, "⚠️ Bank list unavailable, you can continue with skip.", {
-            reply_markup: {
-              inline_keyboard: [[{ text: "✅ Confirm Registration", callback_data: "reg_confirm" }]],
-            },
-          });
+        pending.stage = "select_bank";
+        pending.selectedBankName = null;
+        pending.selectedBankCode = null;
+        pending.bankAccountName = "";
+        pending.bankAccountNumber = "";
+        pendingBankSelection.set(chatId, pending);
+        await cleanupMessages(bot, chatId, 0);
+        await sendBankSelectionPrompt(chatId);
+        return;
+      }
+
+      if (data === "reg_refill_bank_details") {
+        const pending = pendingBankSelection.get(chatId);
+        if (!pending) {
+          await sendAndTrack(bot, chatId, "❌ Registration session expired. Please /start again.");
           return;
         }
-        const bankButtons: any[] = bankList.map((bank) => [
-          { text: `🏦 ${bank.bankName}`, callback_data: `reg_bank:${bank.bankCode}:${bank.bankName}` },
-        ]);
-        bankButtons.push([{ text: "⏭️ Skip (set later)", callback_data: "reg_bank:skip:" }]);
-        await sendAndTrack(bot, chatId, "🏦 <b>Select Bank</b>", {
-          reply_markup: { inline_keyboard: bankButtons },
+        if (!pending.selectedBankName) {
+          await sendAndTrack(bot, chatId, "❌ Please select a bank first.");
+          return;
+        }
+        pending.bankAccountName = "";
+        pending.bankAccountNumber = "";
+        pending.stage = "awaiting_account_name";
+        pendingBankSelection.set(chatId, pending);
+        await cleanupMessages(bot, chatId, 0);
+        await sendAndTrack(bot, chatId, `🏦 Bank: <b>${pending.selectedBankName}</b>\n\n✍️ Please re-enter your bank account name:`, {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🏦 Re-select Bank", callback_data: "reg_reselect_bank" }],
+              [{ text: "❌ Cancel", callback_data: "main_menu" }],
+            ],
+          },
         });
         return;
       }
@@ -712,6 +748,10 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         const pending = pendingBankSelection.get(chatId);
         if (!pending) {
           await sendAndTrack(bot, chatId, "❌ Registration session expired. Please /start again.");
+          return;
+        }
+        if (!pending.selectedBankName || !pending.bankAccountName || !pending.bankAccountNumber) {
+          await sendAndTrack(bot, chatId, "❌ Please complete bank selection and bank details first.");
           return;
         }
 
@@ -730,12 +770,18 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
           if (database) {
             await database
               .update(players)
-              .set({ bankName: pending.selectedBankName })
+              .set({
+                bankName: pending.selectedBankName,
+                bankAccountName: pending.bankAccountName,
+                bankAccountNumber: pending.bankAccountNumber,
+              })
               .where(eq(players.id, player.id));
           }
         }
 
         pendingBankSelection.delete(chatId);
+        pendingRegistrations.delete(chatId);
+        await cleanupMessages(bot, chatId, 0);
 
         const welcomeName =
           [pending.firstName, pending.lastName].filter(Boolean).join(" ").trim() ||
@@ -748,6 +794,8 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
             `Welcome, ${welcomeName}!\n` +
             `Your username: <code>${player.username}</code>\n` +
             (pending.selectedBankName ? `Bank: ${pending.selectedBankName}\n` : "") +
+            (pending.bankAccountName ? `Account Name: ${pending.bankAccountName}\n` : "") +
+            (pending.bankAccountNumber ? `Account Number: <code>${pending.bankAccountNumber}</code>\n` : "") +
             `Your invite code: <code>${player.inviteCode}</code>\n\n` +
             `Share your invite code with friends!`
         );
@@ -1151,6 +1199,83 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
     trackMessage(chatId, msg.message_id);
 
     try {
+      const pendingReg = pendingBankSelection.get(chatId);
+      if (pendingReg) {
+        if (pendingReg.stage === "awaiting_bank_name_manual") {
+          if (!text) {
+            await sendAndTrack(bot, chatId, "❌ Please enter your bank name.");
+            return;
+          }
+          pendingReg.selectedBankName = text;
+          pendingReg.selectedBankCode = null;
+          pendingReg.bankAccountName = "";
+          pendingReg.bankAccountNumber = "";
+          pendingReg.stage = "awaiting_account_name";
+          pendingBankSelection.set(chatId, pendingReg);
+          await cleanupMessages(bot, chatId, 0);
+          await sendAndTrack(bot, chatId, `🏦 Bank: <b>${text}</b>\n\n✍️ Please enter your bank account name:`, {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "❌ Cancel", callback_data: "main_menu" }],
+              ],
+            },
+          });
+          return;
+        }
+
+        if (pendingReg.stage === "awaiting_account_name") {
+          if (!text) {
+            await sendAndTrack(bot, chatId, "❌ Please enter your bank account name.");
+            return;
+          }
+          pendingReg.bankAccountName = text;
+          pendingReg.stage = "awaiting_account_number";
+          pendingBankSelection.set(chatId, pendingReg);
+          await cleanupMessages(bot, chatId, 0);
+          await sendAndTrack(bot, chatId, "🏦 Please enter your bank account number:", {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "🏦 Re-select Bank", callback_data: "reg_reselect_bank" }],
+                [{ text: "❌ Cancel", callback_data: "main_menu" }],
+              ],
+            },
+          });
+          return;
+        }
+
+        if (pendingReg.stage === "awaiting_account_number") {
+          const normalized = text.replace(/\s+/g, "");
+          if (!normalized || normalized.length < 6) {
+            await sendAndTrack(bot, chatId, "❌ Please enter a valid bank account number.");
+            return;
+          }
+          pendingReg.bankAccountNumber = normalized;
+          pendingBankSelection.set(chatId, pendingReg);
+          await cleanupMessages(bot, chatId, 0);
+          await sendAndTrack(
+            bot,
+            chatId,
+            `🧾 <b>Confirm Registration</b>\n\n` +
+              `Phone: <code>${pendingReg.phone}</code>\n` +
+              `Bank: ${pendingReg.selectedBankName || "-"}\n` +
+              `Account Name: ${pendingReg.bankAccountName || "-"}\n` +
+              `Account Number: <code>${pendingReg.bankAccountNumber}</code>\n\n` +
+              `Please confirm or refill details.`,
+            {
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: "✅ Confirm Registration", callback_data: "reg_confirm" }],
+                  [{ text: "✍️ Refill Bank Details", callback_data: "reg_refill_bank_details" }],
+                  [{ text: "🏦 Re-select Bank", callback_data: "reg_reselect_bank" }],
+                  [{ text: "❌ Cancel", callback_data: "main_menu" }],
+                ],
+              },
+            }
+          );
+          return;
+        }
+      }
+
       // Handle pending deposit amount + receipt upload
       if (pendingDeposits.has(chatId)) {
         const pending = pendingDeposits.get(chatId)!;
@@ -1316,6 +1441,9 @@ const pendingBankSelection = new Map<
     inviteCode?: string;
     selectedBankName?: string | null;
     selectedBankCode?: string | null;
+    bankAccountName?: string;
+    bankAccountNumber?: string;
+    stage?: "select_bank" | "awaiting_bank_name_manual" | "awaiting_account_name" | "awaiting_account_number";
   }
 >(); // chatId -> pending registration data waiting for bank selection
 const pendingDeposits = new Map<
