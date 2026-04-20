@@ -279,68 +279,10 @@ export const adminAuthRouter = router({
       phone: z.string().min(1),
       inviteCode: z.string().optional(),
     }))
-    .mutation(async ({ input }) => {
-      const db = await getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
-
-      // Get the first admin (default tenant for web registrations)
-      const admins = await db.select().from(adminAccounts).where(eq(adminAccounts.role, "master")).limit(1);
-      if (admins.length === 0) {
-        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "No admin configured" });
-      }
-      const adminId = admins[0].id;
-
-      // Check if username already exists
-      const existing = await db
-        .select()
-        .from(players)
-        .where(and(eq(players.adminId, adminId), eq(players.telegramUsername, input.username)))
-        .limit(1);
-      if (existing.length > 0) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "Username already exists" });
-      }
-
-      // Check invite code
-      let referrerId: number | null = null;
-      if (input.inviteCode) {
-        const referrer = await db
-          .select()
-          .from(players)
-          .where(and(eq(players.adminId, adminId), eq(players.inviteCode, input.inviteCode)))
-          .limit(1);
-        if (referrer.length > 0) referrerId = referrer[0].id;
-      }
-
-      const passwordHash = await hashPassword(input.password);
-      const invCode = nanoid(8).toUpperCase();
-      const middlewavePlayerId = generateMiddlewavePlayerId(adminId, input.username);
-
-      const [result] = await db.insert(players).values({
-        adminId,
-        telegramId: `web_${nanoid(10)}`, // Web users get a pseudo telegramId
-        telegramUsername: input.username,
-        telegramFirstName: input.username,
-        phone: input.phone,
-        passwordHash,
-        inviteCode: invCode,
-        invitedBy: referrerId,
-        isActive: true,
-        lang: "en",
-        middlewavePlayerId,
-      }).$returningId();
-
-      const tokens = await playerLogin(result.id, adminId);
-
-      return {
-        accessToken: tokens.accessToken,
-        refreshToken: tokens.refreshToken,
-        player: {
-          id: result.id,
-          username: input.username,
-          phone: input.phone,
-          displayName: input.username,
-          vipLevel: 0,
-        },
-      };
+    .mutation(async () => {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "Web registration is disabled. Please register via Telegram bot.",
+      });
     }),
 });

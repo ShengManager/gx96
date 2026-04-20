@@ -290,6 +290,13 @@ async function upsertCallbackView(
   text: string,
   options?: any
 ): Promise<void> {
+  // Telegram editMessageText only supports inline keyboard.
+  // If caller needs a reply keyboard (e.g. request_contact), we must send a new message.
+  if (options?.reply_markup?.keyboard) {
+    await sendAndTrack(bot, chatId, text, options);
+    return;
+  }
+
   const messageId = query.message?.message_id;
   if (messageId) {
     try {
