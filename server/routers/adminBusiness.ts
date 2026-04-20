@@ -12,6 +12,7 @@ import { eq, and, desc, gte, lte, sql } from "drizzle-orm";
 import { startOfDayInTimezone, endOfDayInTimezone } from "../services/timezone";
 import { startBot, stopBot, restartBot, activeBots, getBotStatus, getAllBotStatuses } from "../services/telegramBot";
 import { getMiddlewaveConfig, getGameList, getProjectInfo, getActiveProviders } from "../services/middlewave";
+import { settleDailyReferralRebate } from "../services/depositCycle";
 
 const CURRENCY_TIMEZONE_MAP: Record<string, string> = {
   MYR: "Asia/Kuala_Lumpur",
@@ -350,6 +351,84 @@ export const adminBonusRouter = router({
         details: { groupCount: input.groups.length },
       });
       return { success: true as const };
+    }),
+
+  getReferralRule: publicProcedure
+    .input(z.object({ token: z.string() }))
+    .query(async ({ ctx }) => {
+      const admin = requireAdmin(ctx);
+      await checkPermission(admin.id, admin.role!, "bonus", "view");
+      return db.getReferralRuleByAdmin(admin.adminId!);
+    }),
+
+  updateReferralRule: publicProcedure
+    .input(z.object({
+      token: z.string(),
+      commissionEnabled: z.boolean(),
+      inviteRewardEnabled: z.boolean(),
+      inviteRewardThreshold: z.number().int().min(0),
+      inviteRewardAmount: z.number().min(0),
+      firstDepositRewardEnabled: z.boolean(),
+      firstDepositPercent: z.number().min(0),
+      firstDepositMaxAmount: z.number().min(0),
+      rebateEnabled: z.boolean(),
+      rebatePercent: z.number().min(0),
+      rebateBase: z.enum(["valid_bet", "net_loss"]),
+      rebateMinBase: z.number().min(0),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const admin = requireAdmin(ctx);
+      await checkPermission(admin.id, admin.role!, "bonus", "edit");
+      await db.upsertReferralRuleByAdmin(admin.adminId!, {
+        commissionEnabled: input.commissionEnabled,
+        inviteRewardEnabled: input.inviteRewardEnabled,
+        inviteRewardThreshold: input.inviteRewardThreshold,
+        inviteRewardAmount: input.inviteRewardAmount,
+        firstDepositRewardEnabled: input.firstDepositRewardEnabled,
+        firstDepositPercent: input.firstDepositPercent,
+        firstDepositMaxAmount: input.firstDepositMaxAmount,
+        rebateEnabled: input.rebateEnabled,
+        rebatePercent: input.rebatePercent,
+        rebateBase: input.rebateBase,
+        rebateMinBase: input.rebateMinBase,
+      });
+      await db.createAdminLog({
+        adminId: admin.id,
+        action: "update_referral_rule",
+        module: "bonus",
+        targetType: "referral_rule",
+      });
+      return { success: true as const };
+    }),
+
+  listReferralLedger: publicProcedure
+    .input(z.object({ token: z.string(), limit: z.number().int().min(1).max(200).optional() }))
+    .query(async ({ input, ctx }) => {
+      const admin = requireAdmin(ctx);
+      await checkPermission(admin.id, admin.role!, "bonus", "view");
+      return db.listReferralLedgerByAdmin(admin.adminId!, { limit: input.limit });
+    }),
+
+  settleReferralRebate: publicProcedure
+    .input(z.object({ token: z.string(), targetDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }))
+    .mutation(async ({ input, ctx }) => {
+      const admin = requireAdmin(ctx);
+      await checkPermission(admin.id, admin.role!, "bonus", "edit");
+      const res = await settleDailyReferralRebate({
+        adminId: admin.adminId!,
+        targetDate: input.targetDate,
+      });
+      if (!res.success) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: res.error || "Failed to settle rebate" });
+      }
+      await db.createAdminLog({
+        adminId: admin.id,
+        action: "settle_referral_rebate",
+        module: "bonus",
+        targetType: "referral_rebate",
+        details: { targetDate: input.targetDate, settledRows: res.settledRows, totalAmount: res.totalAmount },
+      });
+      return res;
     }),
 
   delete: publicProcedure

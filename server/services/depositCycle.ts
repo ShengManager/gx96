@@ -1,4 +1,4 @@
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, count, sql, gte, lte } from "drizzle-orm";
 import { getDb, getFinanceLimits, getSetting } from "../db";
 import {
   deposits,
@@ -6,6 +6,9 @@ import {
   depositCycles,
   playerBonuses,
   players,
+  gameLogsCache,
+  referralLedger,
+  referralRules,
 } from "../../drizzle/schema";
 
 // ─── Check if player can create a new deposit ───
@@ -111,6 +114,217 @@ export async function createDeposit(params: {
   return { success: true, depositId: result[0].insertId };
 }
 
+type ReferralRuleLite = {
+  commissionEnabled: boolean;
+  inviteRewardEnabled: boolean;
+  inviteRewardThreshold: number;
+  inviteRewardAmount: number;
+  firstDepositRewardEnabled: boolean;
+  firstDepositPercent: number;
+  firstDepositMaxAmount: number;
+  rebateEnabled: boolean;
+  rebatePercent: number;
+  rebateBase: "valid_bet" | "net_loss";
+  rebateMinBase: number;
+};
+
+function toNum(value: unknown): number {
+  const n = parseFloat(String(value ?? "0"));
+  return Number.isFinite(n) ? n : 0;
+}
+
+async function creditReferralReward(params: {
+  adminId: number;
+  inviterPlayerId: number;
+  amount: number;
+}) {
+  const db = await getDb();
+  if (!db) return false;
+  const amount = Math.max(0, params.amount);
+  if (!(amount > 0)) return false;
+  const [activeCycle] = await db
+    .select()
+    .from(depositCycles)
+    .where(
+      and(
+        eq(depositCycles.adminId, params.adminId),
+        eq(depositCycles.playerId, params.inviterPlayerId),
+        eq(depositCycles.status, "active")
+      )
+    )
+    .orderBy(desc(depositCycles.createdAt))
+    .limit(1);
+  if (activeCycle) {
+    await db
+      .update(depositCycles)
+      .set({
+        bonusAmount: sql`${depositCycles.bonusAmount} + ${amount.toFixed(4)}`,
+      })
+      .where(eq(depositCycles.id, activeCycle.id));
+    return true;
+  }
+  await db.insert(depositCycles).values({
+    playerId: params.inviterPlayerId,
+    adminId: params.adminId,
+    status: "active",
+    depositAmount: "0",
+    bonusAmount: amount.toFixed(4),
+    totalWithdrawn: "0",
+    hasEnteredGame: false,
+    targetRollover: "0",
+    currentRollover: "0",
+    targetTurnover: "0",
+    currentTurnover: "0",
+    rolloverMultiplierSnapshot: "0",
+    turnoverMultiplierSnapshot: "0",
+  });
+  return true;
+}
+
+async function getReferralRuleLite(adminId: number): Promise<ReferralRuleLite | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const [row] = await db
+    .select()
+    .from(referralRules)
+    .where(eq(referralRules.adminId, adminId))
+    .limit(1);
+  if (!row) return null;
+  return {
+    commissionEnabled: !!row.commissionEnabled,
+    inviteRewardEnabled: !!row.inviteRewardEnabled,
+    inviteRewardThreshold: Math.max(0, Number(row.inviteRewardThreshold || 0)),
+    inviteRewardAmount: Math.max(0, toNum(row.inviteRewardAmount)),
+    firstDepositRewardEnabled: !!row.firstDepositRewardEnabled,
+    firstDepositPercent: Math.max(0, toNum(row.firstDepositPercent)),
+    firstDepositMaxAmount: Math.max(0, toNum(row.firstDepositMaxAmount)),
+    rebateEnabled: !!row.rebateEnabled,
+    rebatePercent: Math.max(0, toNum(row.rebatePercent)),
+    rebateBase: row.rebateBase === "net_loss" ? "net_loss" : "valid_bet",
+    rebateMinBase: Math.max(0, toNum(row.rebateMinBase)),
+  };
+}
+
+async function hasReferralLedgerKey(adminId: number, key: string) {
+  const db = await getDb();
+  if (!db) return false;
+  const [row] = await db
+    .select({ id: referralLedger.id })
+    .from(referralLedger)
+    .where(and(eq(referralLedger.adminId, adminId), eq(referralLedger.idempotencyKey, key)))
+    .limit(1);
+  return !!row;
+}
+
+async function awardReferralLedger(params: {
+  adminId: number;
+  inviterPlayerId: number;
+  inviteePlayerId?: number | null;
+  rewardType: "invite_milestone" | "first_deposit_commission" | "rebate";
+  idempotencyKey: string;
+  sourceDepositId?: number | null;
+  periodDate?: string | null;
+  baseAmount: number;
+  rewardAmount: number;
+  note?: string;
+  extraMeta?: any;
+}) {
+  const db = await getDb();
+  if (!db) return false;
+  if (await hasReferralLedgerKey(params.adminId, params.idempotencyKey)) return false;
+  const rewardAmount = Math.max(0, params.rewardAmount);
+  if (!(rewardAmount > 0)) return false;
+  const credited = await creditReferralReward({
+    adminId: params.adminId,
+    inviterPlayerId: params.inviterPlayerId,
+    amount: rewardAmount,
+  });
+  if (!credited) return false;
+  await db.insert(referralLedger).values({
+    adminId: params.adminId,
+    inviterPlayerId: params.inviterPlayerId,
+    inviteePlayerId: params.inviteePlayerId || null,
+    rewardType: params.rewardType,
+    idempotencyKey: params.idempotencyKey.slice(0, 128),
+    sourceDepositId: params.sourceDepositId || null,
+    periodDate: params.periodDate || null,
+    baseAmount: Math.max(0, params.baseAmount).toFixed(4),
+    rewardAmount: rewardAmount.toFixed(4),
+    note: params.note || null,
+    extraMeta: params.extraMeta || null,
+  });
+  return true;
+}
+
+async function processReferralOnApprovedDeposit(deposit: any) {
+  const db = await getDb();
+  if (!db) return;
+  const apiRef = String(deposit.apiPaymentRef || "").toLowerCase();
+  if (apiRef.startsWith("manual-credit-") || apiRef.startsWith("referral-")) return;
+  const rule = await getReferralRuleLite(deposit.adminId);
+  if (!rule?.commissionEnabled) return;
+  const [invitee] = await db
+    .select({ id: players.id, invitedBy: players.invitedBy })
+    .from(players)
+    .where(and(eq(players.id, deposit.playerId), eq(players.adminId, deposit.adminId)))
+    .limit(1);
+  const inviterId = Number(invitee?.invitedBy || 0);
+  if (!(inviterId > 0)) return;
+
+  if (rule.firstDepositRewardEnabled && rule.firstDepositPercent > 0) {
+    const [approvedCnt] = await db
+      .select({ cnt: count() })
+      .from(deposits)
+      .where(
+        and(
+          eq(deposits.adminId, deposit.adminId),
+          eq(deposits.playerId, deposit.playerId),
+          eq(deposits.status, "approved"),
+          sql`NOT (LOWER(COALESCE(${deposits.apiPaymentRef}, '')) LIKE 'referral-%')`,
+          sql`NOT (LOWER(COALESCE(${deposits.apiPaymentRef}, '')) LIKE 'manual-credit-%')`
+        )
+      );
+    const isFirstDeposit = Number(approvedCnt?.cnt || 0) === 1;
+    if (isFirstDeposit) {
+      const base = Math.max(0, toNum(deposit.amount));
+      let reward = base * (rule.firstDepositPercent / 100);
+      if (rule.firstDepositMaxAmount > 0) reward = Math.min(reward, rule.firstDepositMaxAmount);
+      await awardReferralLedger({
+        adminId: deposit.adminId,
+        inviterPlayerId: inviterId,
+        inviteePlayerId: deposit.playerId,
+        rewardType: "first_deposit_commission",
+        idempotencyKey: `ref:first-deposit:${deposit.id}`,
+        sourceDepositId: deposit.id,
+        baseAmount: base,
+        rewardAmount: reward,
+        note: "First deposit commission",
+        extraMeta: { percent: rule.firstDepositPercent, cap: rule.firstDepositMaxAmount },
+      });
+    }
+  }
+
+  if (rule.inviteRewardEnabled && rule.inviteRewardThreshold > 0 && rule.inviteRewardAmount > 0) {
+    const [inviteeCnt] = await db
+      .select({ cnt: count() })
+      .from(players)
+      .where(and(eq(players.adminId, deposit.adminId), eq(players.invitedBy, inviterId)));
+    const totalInvitees = Number(inviteeCnt?.cnt || 0);
+    if (totalInvitees >= rule.inviteRewardThreshold) {
+      await awardReferralLedger({
+        adminId: deposit.adminId,
+        inviterPlayerId: inviterId,
+        rewardType: "invite_milestone",
+        idempotencyKey: `ref:invite-threshold:${inviterId}:${rule.inviteRewardThreshold}`,
+        baseAmount: totalInvitees,
+        rewardAmount: rule.inviteRewardAmount,
+        note: `Invite milestone reached (${rule.inviteRewardThreshold})`,
+        extraMeta: { threshold: rule.inviteRewardThreshold, invitedCount: totalInvitees },
+      });
+    }
+  }
+}
+
 // ─── Approve a deposit ───
 export async function approveDeposit(
   depositId: number,
@@ -176,7 +390,84 @@ export async function approveDeposit(
     })
     .where(eq(deposits.id, depositId));
 
+  await processReferralOnApprovedDeposit({ ...deposit, id: depositId });
+
   return { success: true, cycleId };
+}
+
+export async function settleDailyReferralRebate(params: {
+  adminId: number;
+  targetDate: string; // YYYY-MM-DD
+}) {
+  const db = await getDb();
+  if (!db) return { success: false as const, settledRows: 0, totalAmount: 0, error: "Database unavailable" };
+  const rule = await getReferralRuleLite(params.adminId);
+  if (!rule?.rebateEnabled || !(rule.rebatePercent > 0)) {
+    return { success: false as const, settledRows: 0, totalAmount: 0, error: "Rebate rule is disabled" };
+  }
+  const dateStart = new Date(`${params.targetDate}T00:00:00.000Z`);
+  const dateEnd = new Date(`${params.targetDate}T23:59:59.999Z`);
+  if (Number.isNaN(dateStart.getTime()) || Number.isNaN(dateEnd.getTime())) {
+    return { success: false as const, settledRows: 0, totalAmount: 0, error: "Invalid target date" };
+  }
+
+  const rows = await db
+    .select({
+      inviteePlayerId: gameLogsCache.playerId,
+      invitedBy: players.invitedBy,
+      validBetSum: sql<string>`COALESCE(SUM(${gameLogsCache.validBet}), 0)`,
+      winLoseSum: sql<string>`COALESCE(SUM(${gameLogsCache.winLose}), 0)`,
+    })
+    .from(gameLogsCache)
+    .innerJoin(players, and(eq(players.id, gameLogsCache.playerId), eq(players.adminId, gameLogsCache.adminId)))
+    .where(
+      and(
+        eq(gameLogsCache.adminId, params.adminId),
+        gte(gameLogsCache.transactionDate, dateStart),
+        lte(gameLogsCache.transactionDate, dateEnd),
+        sql`${players.invitedBy} IS NOT NULL`
+      )
+    )
+    .groupBy(gameLogsCache.playerId, players.invitedBy);
+
+  let settledRows = 0;
+  let totalAmount = 0;
+
+  for (const row of rows) {
+    const inviterId = Number(row.invitedBy || 0);
+    const inviteeId = Number(row.inviteePlayerId || 0);
+    if (!(inviterId > 0 && inviteeId > 0)) continue;
+    const validBet = Math.max(0, toNum(row.validBetSum));
+    const netLoss = Math.max(0, -toNum(row.winLoseSum));
+    const base = rule.rebateBase === "net_loss" ? netLoss : validBet;
+    if (base < rule.rebateMinBase) continue;
+    const reward = Math.max(0, base * (rule.rebatePercent / 100));
+    if (!(reward > 0)) continue;
+    const idem = `ref:rebate:${params.targetDate}:${inviterId}:${inviteeId}:${rule.rebateBase}`;
+    const created = await awardReferralLedger({
+      adminId: params.adminId,
+      inviterPlayerId: inviterId,
+      inviteePlayerId: inviteeId,
+      rewardType: "rebate",
+      idempotencyKey: idem,
+      periodDate: params.targetDate,
+      baseAmount: base,
+      rewardAmount: reward,
+      note: `Daily rebate (${rule.rebateBase})`,
+      extraMeta: {
+        targetDate: params.targetDate,
+        validBet,
+        netLoss,
+        rebatePercent: rule.rebatePercent,
+      },
+    });
+    if (created) {
+      settledRows += 1;
+      totalAmount += reward;
+    }
+  }
+
+  return { success: true as const, settledRows, totalAmount: Number(totalAmount.toFixed(4)) };
 }
 
 // ─── Reject a deposit ───

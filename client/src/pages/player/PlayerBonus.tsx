@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { usePlayerAuth } from "@/contexts/PlayerAuthContext";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Link } from "wouter";
+import { Link, useSearch } from "wouter";
 import {
   Gift, Loader2, Sparkles, Clock, Trophy,
   ArrowRight, Percent, DollarSign, Shuffle, Target,
@@ -37,6 +37,8 @@ function groupBonusesForDisplay(list: any[]) {
 export default function PlayerBonus() {
   const { accessToken, isAuthenticated, loading: authLoading } = usePlayerAuth();
   const [selectedBonus, setSelectedBonus] = useState<any>(null);
+  const search = useSearch();
+  const autoOpenedBonusRef = useRef(false);
 
   const bonusListQuery = trpc.player.bonusList.useQuery(
     { token: accessToken || "" },
@@ -66,6 +68,26 @@ export default function PlayerBonus() {
   const myBonuses = (myBonusesQuery.data as any[]) || [];
   const activeBonuses = myBonuses.filter((b) => b.status === "active");
   const bonusGroups = useMemo(() => groupBonusesForDisplay(bonuses), [bonuses]);
+  const requestedBonusId = useMemo(() => {
+    const params = new URLSearchParams(search);
+    const raw = params.get("bonusId");
+    const id = Number(raw || 0);
+    return Number.isFinite(id) && id > 0 ? id : 0;
+  }, [search]);
+
+  useEffect(() => {
+    autoOpenedBonusRef.current = false;
+  }, [requestedBonusId]);
+
+  useEffect(() => {
+    if (!requestedBonusId || autoOpenedBonusRef.current) return;
+    if (!Array.isArray(bonuses) || bonuses.length === 0) return;
+    const target = bonuses.find((b: any) => Number(b.id) === requestedBonusId);
+    if (target) {
+      setSelectedBonus(target);
+      autoOpenedBonusRef.current = true;
+    }
+  }, [requestedBonusId, bonuses]);
 
   if (authLoading) {
     return (

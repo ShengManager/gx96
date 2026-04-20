@@ -32,7 +32,6 @@ import {
   checkWithdrawalConditions,
   createWithdrawal,
 } from "./depositCycle";
-import { claimBonus } from "./bonus";
 import { getMiddlewaveConfig, loginGame, getGameList, getActiveProviders, getProjectInfo } from "./middlewave";
 import {
   notifyAdminNewDeposit,
@@ -325,14 +324,18 @@ async function upsertCallbackView(
   await sendAndTrack(bot, chatId, text, options);
 }
 
-function buildLoginUrlFromBase(base: string, token: string): string {
+function buildLoginUrlFromBase(base: string, token: string, redirectPath?: string): string {
   const raw = String(base || "").trim();
   if (!raw) return "";
   const normalized = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
   try {
     const u = new URL(normalized);
     u.pathname = "/login";
-    u.search = `token=${encodeURIComponent(token)}`;
+    const qp = new URLSearchParams();
+    qp.set("token", token);
+    const redirect = String(redirectPath || "").trim();
+    if (redirect.startsWith("/")) qp.set("redirect", redirect);
+    u.search = qp.toString();
     u.hash = "";
     return u.toString();
   } catch {
@@ -340,21 +343,43 @@ function buildLoginUrlFromBase(base: string, token: string): string {
   }
 }
 
-async function resolvePlayerAutoLoginUrl(adminId: number, botConfig: any, token: string): Promise<string> {
-  const fromBot = buildLoginUrlFromBase((botConfig as any)?.frontendUrl || "", token);
+async function resolvePlayerAutoLoginUrl(adminId: number, botConfig: any, token: string, redirectPath?: string): Promise<string> {
+  const fromBot = buildLoginUrlFromBase((botConfig as any)?.frontendUrl || "", token, redirectPath);
   if (fromBot) return fromBot;
 
   try {
     const acl = await db.getDomainAcl(adminId);
     const playerDomain = acl.find((d: any) => d.isActive && (d.purpose === "player" || d.purpose === "both"))?.domain;
-    const fromAcl = buildLoginUrlFromBase(playerDomain || "", token);
+    const fromAcl = buildLoginUrlFromBase(playerDomain || "", token, redirectPath);
     if (fromAcl) return fromAcl;
   } catch {}
 
-  const fromEnv = buildLoginUrlFromBase(process.env.FRONTEND_URL || "", token);
+  const fromEnv = buildLoginUrlFromBase(process.env.FRONTEND_URL || "", token, redirectPath);
   if (fromEnv) return fromEnv;
 
   return "";
+}
+
+async function getLiveBalance(playerId: number): Promise<number> {
+  try {
+    const cycle = await db.getActiveCycle(playerId);
+    if (!cycle) return 0;
+    const deposit = Math.max(0, parseFloat(String((cycle as any).depositAmount || "0")) || 0);
+    const bonus = Math.max(0, parseFloat(String((cycle as any).bonusAmount || "0")) || 0);
+    const withdrawn = Math.max(0, parseFloat(String((cycle as any).totalWithdrawn || "0")) || 0);
+    return Math.max(0, deposit + bonus - withdrawn);
+  } catch {
+    return 0;
+  }
+}
+
+function formatBonusSummaryLine(b: any): string {
+  if (b.bonusType === 0) return `$${parseFloat(b.fixedAmount || "0").toFixed(2)} fixed`;
+  if (b.bonusType === 1) return `${parseFloat(b.percentage || "0")}% of deposit`;
+  if (b.bonusType === 2) {
+    return `$${parseFloat(b.randomMin || "0").toFixed(2)} - $${parseFloat(b.randomMax || "0").toFixed(2)}`;
+  }
+  return "Promotion";
 }
 
 // ─── Handler Registration ───
@@ -1111,41 +1136,56 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
           let label = `🎁 ${b.name}`;
           if (b.bonusType === 0) label += ` ($${parseFloat(b.fixedAmount || "0").toFixed(0)})`;
           if (b.bonusType === 1) label += ` (${parseFloat(b.percentage || "0")}%)`;
-          buttons.push([{ text: label, callback_data: `claim_bonus:${b.id}` }]);
+          buttons.push([{ text: label, callback_data: `bonus_detail:${b.id}` }]);
         }
         buttons.push([{ text: "⬅️ Back", callback_data: "main_menu" }]);
 
-        await render("🎁 <b>Available Bonuses</b>\n\nSelect a bonus to claim:", {
+        await render("🎁 <b>Available Bonuses</b>\n\nSelect a bonus to view details:", {
           reply_markup: { inline_keyboard: buttons },
         });
         return;
       }
 
-      if (data.startsWith("claim_bonus:")) {
+      if (data.startsWith("bonus_detail:")) {
         const bonusId = parseInt(data.split(":")[1]);
-        const cycle = await db.getActiveCycle(player.id);
-        const depositAmount = cycle ? parseFloat(cycle.depositAmount) : 0;
-        const idempotencyKey = `tg:${query.id}:${player.id}:${bonusId}`;
-
-        const result = await claimBonus(player.id, adminId, bonusId, depositAmount, {
-          idempotencyKey,
-          requestSource: "telegram_bot",
-          sourceEvent: "telegram_claim",
-          sourceRef: query.id,
-          requestMeta: {
-            callbackData: data,
-            chatId,
-          },
-        });
-        if (result.success) {
-          await render(`✅ <b>Bonus Claimed!</b>\n\nAmount: $${(result.awardedAmount || 0).toFixed(2)}`, {
+        const bonuses = await db.getActiveBonusesByAdmin(adminId);
+        const bonus = bonuses.find((b: any) => Number(b.id) === Number(bonusId));
+        if (!bonus) {
+          await render("❌ Bonus not found or not active.", {
             reply_markup: { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "bonus" }]] },
           });
-        } else {
-          await render(`❌ ${result.error}`, {
-            reply_markup: { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "bonus" }]] },
-          });
+          return;
         }
+        const autoLoginToken = generateAutoLoginToken(player.id, player.adminId || adminId);
+        const redirect = `/bonus?bonusId=${bonus.id}`;
+        const webLink = await resolvePlayerAutoLoginUrl(adminId, botConfig, autoLoginToken, redirect);
+        let text =
+          `🎁 <b>${bonus.name}</b>\n\n` +
+          `${bonus.description ? `${bonus.description}\n\n` : ""}` +
+          `📌 Type: ${bonus.bonusType === 0 ? "Fixed" : bonus.bonusType === 1 ? "Percentage" : "Random"}\n` +
+          `💡 Value: ${formatBonusSummaryLine(bonus)}\n`;
+        if (bonus.rolloverMultiplier) text += `🔄 Rollover: x${bonus.rolloverMultiplier}\n`;
+        if (bonus.turnoverTarget) text += `📊 Turnover: x${parseFloat(bonus.turnoverTarget || "0").toFixed(2)}\n`;
+        if (bonus.maxWithdraw) text += `💸 Max Withdraw: $${parseFloat(bonus.maxWithdraw || "0").toFixed(2)}\n`;
+        text += `\nℹ️ Claim is done on the frontend bonus page.`;
+
+        const rows: any[] = [];
+        if (webLink) {
+          rows.push([{ text: "🚀 Open Bonus Page", url: webLink }]);
+        } else {
+          rows.push([{ text: "⚠️ Frontend URL not configured", callback_data: "bonus" }]);
+        }
+        rows.push([{ text: "⬅️ Back to Bonus List", callback_data: "bonus" }]);
+        await render(text, { reply_markup: { inline_keyboard: rows } });
+        return;
+      }
+
+      if (data.startsWith("claim_bonus:")) {
+        // Backward compatibility for old cached callback_data in Telegram chat history.
+        await render(
+          "ℹ️ Bonus claiming in Telegram is disabled.\n\nPlease open the frontend bonus page to claim.",
+          { reply_markup: { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "bonus" }]] } }
+        );
         return;
       }
 
@@ -1176,7 +1216,8 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
 
       // ─── Balance ───
       if (data === "balance") {
-        await render(`💰 <b>Your Balance</b>\n\nMain: $${parseFloat(player.balance || "0").toFixed(2)}`, {
+        const liveBalance = await getLiveBalance(player.id);
+        await render(`💰 <b>Your Balance</b>\n\nMain: $${liveBalance.toFixed(2)}`, {
           reply_markup: { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "main_menu" }]] },
         });
         return;
@@ -1394,7 +1435,7 @@ async function showMainMenu(
   botConfig: any,
   query?: TelegramBot.CallbackQuery
 ) {
-  const balance = parseFloat(player.balance || "0").toFixed(2);
+  const balance = (await getLiveBalance(player.id)).toFixed(2);
 
   const text =
     `🎮 <b>${botConfig.botName || "TgGaming"}</b>\n\n` +

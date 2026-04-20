@@ -38,12 +38,15 @@ export default function PlayerLogin() {
   const handleAutoLogin = async (token: string) => {
     setAutoLoginLoading(true);
     try {
+      const params = new URLSearchParams(search);
+      const redirect = params.get("redirect") || "/";
+      const safeRedirect = redirect.startsWith("/") ? redirect : "/";
       const res = await fetch(`/api/player/auto-login?token=${encodeURIComponent(token)}`);
       const data = await res.json();
       if (res.ok && data.accessToken) {
         login(data.accessToken, data.refreshToken, data.player);
         toast.success("Welcome back!");
-        setLocation("/");
+        setLocation(safeRedirect);
       } else {
         toast.error(data.error || "Auto-login failed. Please login manually.");
       }

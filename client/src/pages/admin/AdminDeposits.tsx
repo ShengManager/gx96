@@ -73,6 +73,13 @@ export default function AdminDeposits() {
     }
   };
 
+  const sourceLabel = (dep: any) => {
+    const kind = String(dep?.sourceKind || "");
+    if (kind === "admin_manual") return "Admin Manual";
+    if (kind === "api_deposit") return "API Deposit";
+    return "Player Deposit";
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -110,6 +117,7 @@ export default function AdminDeposits() {
                 <TableHead>ID</TableHead>
                 <TableHead>Player</TableHead>
                 <TableHead>Amount</TableHead>
+                <TableHead>Source</TableHead>
                 <TableHead>Method</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Receipt</TableHead>
@@ -123,6 +131,9 @@ export default function AdminDeposits() {
                   <TableCell className="font-mono text-sm">{dep.id}</TableCell>
                   <TableCell className="font-mono text-sm">#{dep.playerId}</TableCell>
                   <TableCell className="font-bold">${parseFloat(dep.amount).toFixed(2)}</TableCell>
+                  <TableCell className="text-sm">
+                    <Badge variant="outline">{sourceLabel(dep)}</Badge>
+                  </TableCell>
                   <TableCell className="text-sm">{dep.paymentMethod === "bank_transfer" ? "Bank" : "API"}</TableCell>
                   <TableCell>
                     <span className={`status-badge ${statusColor(dep.status)}`}>{dep.status}</span>
@@ -162,7 +173,7 @@ export default function AdminDeposits() {
               ))}
               {(!data?.deposits || data.deposits.length === 0) && (
                 <TableRow>
-                  <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
                     {depositsQuery.isLoading ? "Loading..." : "No deposits found"}
                   </TableCell>
                 </TableRow>

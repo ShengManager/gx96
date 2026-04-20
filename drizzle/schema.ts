@@ -396,6 +396,48 @@ export const systemSettings = mysqlTable("system_settings", {
   uniqueIndex("uq_admin_setting").on(table.adminId, table.settingKey),
 ]);
 
+// ─── 18b. Referral Rules (Commission/Rebate) ───
+export const referralRules = mysqlTable("referral_rules", {
+  id: int("id").autoincrement().primaryKey(),
+  adminId: int("adminId").notNull(),
+  commissionEnabled: boolean("commissionEnabled").default(false).notNull(),
+  inviteRewardEnabled: boolean("inviteRewardEnabled").default(false).notNull(),
+  inviteRewardThreshold: int("inviteRewardThreshold").default(0).notNull(),
+  inviteRewardAmount: decimal("inviteRewardAmount", { precision: 14, scale: 4 }).default("0").notNull(),
+  firstDepositRewardEnabled: boolean("firstDepositRewardEnabled").default(false).notNull(),
+  firstDepositPercent: decimal("firstDepositPercent", { precision: 8, scale: 4 }).default("0").notNull(),
+  firstDepositMaxAmount: decimal("firstDepositMaxAmount", { precision: 14, scale: 4 }).default("0").notNull(),
+  rebateEnabled: boolean("rebateEnabled").default(false).notNull(),
+  rebatePercent: decimal("rebatePercent", { precision: 8, scale: 4 }).default("0").notNull(),
+  rebateBase: mysqlEnum("rebateBase", ["valid_bet", "net_loss"]).default("valid_bet").notNull(),
+  rebateMinBase: decimal("rebateMinBase", { precision: 14, scale: 4 }).default("0").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  uniqueIndex("uq_referral_rules_admin").on(table.adminId),
+]);
+
+// ─── 18c. Referral Ledger (immutable audit + idempotency) ───
+export const referralLedger = mysqlTable("referral_ledger", {
+  id: int("id").autoincrement().primaryKey(),
+  adminId: int("adminId").notNull(),
+  inviterPlayerId: int("inviterPlayerId").notNull(),
+  inviteePlayerId: int("inviteePlayerId"),
+  rewardType: mysqlEnum("rewardType", ["invite_milestone", "first_deposit_commission", "rebate"]).notNull(),
+  idempotencyKey: varchar("idempotencyKey", { length: 128 }).notNull(),
+  sourceDepositId: int("sourceDepositId"),
+  periodDate: varchar("periodDate", { length: 32 }),
+  baseAmount: decimal("baseAmount", { precision: 14, scale: 4 }).default("0").notNull(),
+  rewardAmount: decimal("rewardAmount", { precision: 14, scale: 4 }).default("0").notNull(),
+  note: text("note"),
+  extraMeta: json("extraMeta"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("uq_referral_ledger_idem").on(table.adminId, table.idempotencyKey),
+  index("idx_referral_ledger_inviter").on(table.adminId, table.inviterPlayerId, table.createdAt),
+  index("idx_referral_ledger_type").on(table.adminId, table.rewardType, table.createdAt),
+]);
+
 // ─── 18a. Admin media library (uploaded images per tenant) ───
 export const adminMediaLibrary = mysqlTable("admin_media_library", {
   id: int("id").autoincrement().primaryKey(),
@@ -489,3 +531,5 @@ export const domainAcl = mysqlTable("domain_acl", {
 ]);
 
 export type DomainAclEntry = typeof domainAcl.$inferSelect;
+export type ReferralRule = typeof referralRules.$inferSelect;
+export type ReferralLedgerEntry = typeof referralLedger.$inferSelect;

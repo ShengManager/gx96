@@ -160,6 +160,63 @@ export default function AdminBonuses() {
 
   const canEdit = hasPermission("bonus", "edit");
   const canDelete = hasPermission("bonus", "delete");
+  const todayDate = new Date().toISOString().slice(0, 10);
+  const yesterdayDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  const referralRuleQuery = trpc.adminBonus.getReferralRule.useQuery(
+    { token: accessToken || "" },
+    { enabled: !!accessToken }
+  );
+  const referralLedgerQuery = trpc.adminBonus.listReferralLedger.useQuery(
+    { token: accessToken || "", limit: 80 },
+    { enabled: !!accessToken }
+  );
+  const [rebateSettleDate, setRebateSettleDate] = useState(yesterdayDate);
+  const [referralForm, setReferralForm] = useState({
+    commissionEnabled: false,
+    inviteRewardEnabled: false,
+    inviteRewardThreshold: 0,
+    inviteRewardAmount: 0,
+    firstDepositRewardEnabled: false,
+    firstDepositPercent: 0,
+    firstDepositMaxAmount: 0,
+    rebateEnabled: false,
+    rebatePercent: 0,
+    rebateBase: "valid_bet" as "valid_bet" | "net_loss",
+    rebateMinBase: 0,
+  });
+
+  useEffect(() => {
+    if (!referralRuleQuery.data) return;
+    setReferralForm({
+      commissionEnabled: !!referralRuleQuery.data.commissionEnabled,
+      inviteRewardEnabled: !!referralRuleQuery.data.inviteRewardEnabled,
+      inviteRewardThreshold: Number(referralRuleQuery.data.inviteRewardThreshold || 0),
+      inviteRewardAmount: Number(referralRuleQuery.data.inviteRewardAmount || 0),
+      firstDepositRewardEnabled: !!referralRuleQuery.data.firstDepositRewardEnabled,
+      firstDepositPercent: Number(referralRuleQuery.data.firstDepositPercent || 0),
+      firstDepositMaxAmount: Number(referralRuleQuery.data.firstDepositMaxAmount || 0),
+      rebateEnabled: !!referralRuleQuery.data.rebateEnabled,
+      rebatePercent: Number(referralRuleQuery.data.rebatePercent || 0),
+      rebateBase: referralRuleQuery.data.rebateBase === "net_loss" ? "net_loss" : "valid_bet",
+      rebateMinBase: Number(referralRuleQuery.data.rebateMinBase || 0),
+    });
+  }, [referralRuleQuery.data]);
+
+  const saveReferralRuleMutation = trpc.adminBonus.updateReferralRule.useMutation({
+    onSuccess: () => {
+      void referralRuleQuery.refetch();
+      toast.success("Commission / rebate rule saved");
+    },
+    onError: (err) => toast.error(err.message),
+  });
+  const settleRebateMutation = trpc.adminBonus.settleReferralRebate.useMutation({
+    onSuccess: (res) => {
+      void referralLedgerQuery.refetch();
+      toast.success(`Rebate settled: ${res.settledRows} rows, total ${Number(res.totalAmount || 0).toFixed(2)}`);
+    },
+    onError: (err) => toast.error(err.message),
+  });
 
   return (
     <div className="space-y-6">
@@ -219,6 +276,223 @@ export default function AdminBonuses() {
               }}
             />
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="pt-6 space-y-4">
+          <div>
+            <h2 className="text-lg font-semibold">Commission & Rebate</h2>
+            <p className="text-xs text-muted-foreground">
+              Referral rewards are credited to inviter wallet balance and written into immutable referral ledger entries.
+            </p>
+          </div>
+          {referralRuleQuery.isLoading ? (
+            <div className="text-sm text-muted-foreground">Loading referral rule…</div>
+          ) : (
+            <div className="space-y-4">
+              <div className="rounded-md border border-white/10 p-3 space-y-3">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    checked={referralForm.commissionEnabled}
+                    onCheckedChange={(v) => setReferralForm((f) => ({ ...f, commissionEnabled: v }))}
+                    disabled={!canEdit}
+                  />
+                  <Label>Enable Commission Engine</Label>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={referralForm.inviteRewardEnabled}
+                      onCheckedChange={(v) => setReferralForm((f) => ({ ...f, inviteRewardEnabled: v }))}
+                      disabled={!canEdit}
+                    />
+                    <Label>Invite milestone reward</Label>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Invite threshold</Label>
+                    <Input
+                      type="number"
+                      value={referralForm.inviteRewardThreshold}
+                      onChange={(e) =>
+                        setReferralForm((f) => ({ ...f, inviteRewardThreshold: parseInt(e.target.value) || 0 }))
+                      }
+                      disabled={!canEdit}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Reward amount</Label>
+                    <Input
+                      type="number"
+                      value={referralForm.inviteRewardAmount}
+                      onChange={(e) =>
+                        setReferralForm((f) => ({ ...f, inviteRewardAmount: parseFloat(e.target.value) || 0 }))
+                      }
+                      disabled={!canEdit}
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={referralForm.firstDepositRewardEnabled}
+                      onCheckedChange={(v) => setReferralForm((f) => ({ ...f, firstDepositRewardEnabled: v }))}
+                      disabled={!canEdit}
+                    />
+                    <Label>First deposit commission</Label>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Percent (%)</Label>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      value={referralForm.firstDepositPercent}
+                      onChange={(e) =>
+                        setReferralForm((f) => ({ ...f, firstDepositPercent: parseFloat(e.target.value) || 0 }))
+                      }
+                      disabled={!canEdit}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Max amount (0 = no cap)</Label>
+                    <Input
+                      type="number"
+                      value={referralForm.firstDepositMaxAmount}
+                      onChange={(e) =>
+                        setReferralForm((f) => ({ ...f, firstDepositMaxAmount: parseFloat(e.target.value) || 0 }))
+                      }
+                      disabled={!canEdit}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-md border border-white/10 p-3 space-y-3">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    checked={referralForm.rebateEnabled}
+                    onCheckedChange={(v) => setReferralForm((f) => ({ ...f, rebateEnabled: v }))}
+                    disabled={!canEdit}
+                  />
+                  <Label>Enable Rebate</Label>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                  <div className="space-y-2">
+                    <Label>Rebate percent (%)</Label>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      value={referralForm.rebatePercent}
+                      onChange={(e) =>
+                        setReferralForm((f) => ({ ...f, rebatePercent: parseFloat(e.target.value) || 0 }))
+                      }
+                      disabled={!canEdit}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Base</Label>
+                    <Select
+                      value={referralForm.rebateBase}
+                      onValueChange={(v) =>
+                        setReferralForm((f) => ({
+                          ...f,
+                          rebateBase: v === "net_loss" ? "net_loss" : "valid_bet",
+                        }))
+                      }
+                      disabled={!canEdit}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="valid_bet">Valid Bet</SelectItem>
+                        <SelectItem value="net_loss">Net Loss</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Min base amount</Label>
+                    <Input
+                      type="number"
+                      value={referralForm.rebateMinBase}
+                      onChange={(e) =>
+                        setReferralForm((f) => ({ ...f, rebateMinBase: parseFloat(e.target.value) || 0 }))
+                      }
+                      disabled={!canEdit}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Settle date</Label>
+                    <Input
+                      type="date"
+                      max={todayDate}
+                      value={rebateSettleDate}
+                      onChange={(e) => setRebateSettleDate(e.target.value)}
+                      disabled={!canEdit}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {canEdit && (
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    onClick={() => saveReferralRuleMutation.mutate({ token: accessToken!, ...referralForm })}
+                    disabled={saveReferralRuleMutation.isPending}
+                  >
+                    {saveReferralRuleMutation.isPending ? "Saving…" : "Save Commission/Rebate Rule"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => settleRebateMutation.mutate({ token: accessToken!, targetDate: rebateSettleDate })}
+                    disabled={settleRebateMutation.isPending || !rebateSettleDate}
+                  >
+                    {settleRebateMutation.isPending ? "Settling…" : "Settle Rebate For Date"}
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <h3 className="text-sm font-semibold">Referral Ledger</h3>
+            <div className="overflow-auto border rounded-md">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/40">
+                  <tr>
+                    <th className="text-left p-2">Time</th>
+                    <th className="text-left p-2">Type</th>
+                    <th className="text-left p-2">Inviter</th>
+                    <th className="text-left p-2">Invitee</th>
+                    <th className="text-left p-2">Base</th>
+                    <th className="text-left p-2">Reward</th>
+                    <th className="text-left p-2">Note</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(referralLedgerQuery.data as any[] | undefined)?.length ? (
+                    (referralLedgerQuery.data as any[]).map((row) => (
+                      <tr key={row.id} className="border-t">
+                        <td className="p-2 whitespace-nowrap">{new Date(row.createdAt).toLocaleString()}</td>
+                        <td className="p-2">{String(row.rewardType || "-")}</td>
+                        <td className="p-2">{row.inviterPlayerId}</td>
+                        <td className="p-2">{row.inviteePlayerId || "-"}</td>
+                        <td className="p-2">{Number(row.baseAmount || 0).toFixed(2)}</td>
+                        <td className="p-2 font-medium">{Number(row.rewardAmount || 0).toFixed(2)}</td>
+                        <td className="p-2">{row.note || "-"}</td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td className="p-3 text-muted-foreground" colSpan={7}>
+                        No referral rewards yet.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </CardContent>
       </Card>
 
