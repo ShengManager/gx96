@@ -145,12 +145,6 @@ export default function AdminDeposits() {
                         <Button size="sm" variant="outline" onClick={() => handleMutation.mutate({ token: accessToken!, depositId: dep.id })}>
                           <Clock className="w-3 h-3 mr-1" /> Handle
                         </Button>
-                        <Button size="sm" variant="default" onClick={() => { setSelectedDeposit(dep); setShowApproveDialog(true); }}>
-                          <Check className="w-3 h-3 mr-1" /> Approve
-                        </Button>
-                        <Button size="sm" variant="destructive" onClick={() => { setSelectedDeposit(dep); setShowRejectDialog(true); }}>
-                          <X className="w-3 h-3 mr-1" /> Reject
-                        </Button>
                       </div>
                     )}
                     {canEdit && dep.status === "processing" && (

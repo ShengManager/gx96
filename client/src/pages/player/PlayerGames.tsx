@@ -50,7 +50,8 @@ function getProviderType(game: any): string {
 }
 
 export default function PlayerGames() {
-  const { accessToken, isAuthenticated } = usePlayerAuth();
+  const { accessToken, isAuthenticated, loading: authLoading } = usePlayerAuth();
+  const canFetch = !!accessToken && !authLoading;
   const [, setLocation] = useLocation();
   const [search, setSearch] = useState("");
   const [groupBy, setGroupBy] = useState<"type" | "provider">("type");
@@ -69,11 +70,15 @@ export default function PlayerGames() {
 
   const gamesQuery = trpc.player.gameList.useQuery(
     { token: accessToken || "" },
-    { enabled: !!accessToken }
+    { enabled: canFetch, retry: 2 }
+  );
+  const balanceQuery = trpc.player.balance.useQuery(
+    { token: accessToken || "" },
+    { enabled: canFetch, refetchInterval: 30000 }
   );
   const bonusListQuery = trpc.player.bonusList.useQuery(
     { token: accessToken || "" },
-    { enabled: !!accessToken }
+    { enabled: canFetch, retry: 2 }
   );
 
   const launchMutation = trpc.player.launchGame.useMutation({
@@ -96,6 +101,7 @@ export default function PlayerGames() {
   });
 
   const games = (gamesQuery.data as any)?.games || [];
+  const balanceNum = Math.max(0, Number((balanceQuery.data as any)?.balance || 0) || 0);
 
   const TYPE_LABEL_MAP: Record<string, string> = {
     // Common normalized types
@@ -178,7 +184,8 @@ export default function PlayerGames() {
   const handleLaunch = (game: any) => {
     if (!isAuthenticated) { toast.error("Please login first"); return; }
     const availableBonuses = ((bonusListQuery.data as any[]) || []).filter((b: any) => b?.canClaim);
-    if (availableBonuses.length > 0) {
+    // Only show this reminder when player has funds to actually start wagering.
+    if (availableBonuses.length > 0 && balanceNum > 0.0001) {
       setPendingGame(game);
       setBonusConfirmOpen(true);
       return;
@@ -286,9 +293,15 @@ export default function PlayerGames() {
 
       {/* Game Grid */}
       <div className="px-4 pb-4">
-        {gamesQuery.isLoading ? (
+        {gamesQuery.isPending ? (
           <div className="flex items-center justify-center py-16">
             <Loader2 className="w-8 h-8 animate-spin text-primary" />
+          </div>
+        ) : gamesQuery.isError ? (
+          <div className="text-center py-16 space-y-2">
+            <p className="text-sm text-destructive">Could not load games</p>
+            <p className="text-xs text-muted-foreground">{gamesQuery.error?.message}</p>
+            <Button variant="outline" size="sm" onClick={() => gamesQuery.refetch()}>Retry</Button>
           </div>
         ) : filteredGames.length > 0 ? (
           <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2.5">
@@ -355,6 +368,11 @@ export default function PlayerGames() {
           <div className="text-center py-16">
             <Search className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
             <p className="text-muted-foreground text-sm">No games found</p>
+            {!search && games.length === 0 && (
+              <p className="text-xs text-muted-foreground mt-2 max-w-sm mx-auto">
+                If this stays empty, ask the operator to set Middlewave API URL and project token in Admin → Settings, and confirm the upstream GameList API returns data.
+              </p>
+            )}
             {search && (
               <Button variant="ghost" size="sm" className="mt-2" onClick={() => setSearch("")}>
                 Clear search

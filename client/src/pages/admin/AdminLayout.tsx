@@ -1,5 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useCallback } from "react";
 import { useAdminAuth } from "@/contexts/AdminAuthContext";
+import { useAdminNotifications } from "@/hooks/useAdminNotifications";
+import { trpc } from "@/lib/trpc";
 import { useLocation, Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -8,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   LayoutDashboard, Users, ArrowDownCircle, ArrowUpCircle,
-  Gift, Building2, Settings, FileText, Image, ClipboardList,
+  Gift, Building2, Settings, FileText, Image, Images, ClipboardList, Palette,
   LogOut, Menu, X, Shield, ChevronRight, ChevronDown,
   Bell, Wifi, WifiOff, Globe, Bot,
 } from "lucide-react";
@@ -24,7 +26,6 @@ interface NavItem {
   label: string;
   icon: any;
   module: string;
-  badge?: number;
 }
 
 const NAV_SECTIONS: NavSection[] = [
@@ -50,6 +51,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { path: "/admin/bonuses", label: "Bonuses", icon: Gift, module: "bonus" },
       { path: "/admin/banners", label: "Banners", icon: Image, module: "banner" },
+      { path: "/admin/media", label: "Media Library", icon: Images, module: "banner" },
     ],
   },
   {
@@ -65,32 +67,48 @@ const NAV_SECTIONS: NavSection[] = [
     defaultOpen: false,
     items: [
       { path: "/admin/logs", label: "Audit Logs", icon: ClipboardList, module: "log" },
+      { path: "/admin/layouts", label: "Layouts", icon: Palette, module: "setting" },
       { path: "/admin/settings", label: "Settings", icon: Settings, module: "setting" },
       { path: "/admin/setup-guide", label: "Setup Guide", icon: FileText, module: "setting" },
     ],
   },
 ];
 
+function pendingBadgeForPath(
+  path: string,
+  deposits: number,
+  withdrawals: number
+): number | undefined {
+  if (path === "/admin/deposits" && deposits > 0) return deposits;
+  if (path === "/admin/withdrawals" && withdrawals > 0) return withdrawals;
+  return undefined;
+}
+
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
-  const { user, logout, hasPermission } = useAdminAuth();
+  const { user, logout, hasPermission, accessToken } = useAdminAuth();
   const [location] = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [wsConnected, setWsConnected] = useState(false);
-  const [pendingCount, setPendingCount] = useState(0);
+  const utils = trpc.useUtils();
 
-  // WebSocket connection status indicator
-  useEffect(() => {
-    const checkWs = () => {
-      // Check if socket.io is connected
-      const w = window as any;
-      if (w.io || w.__socket) {
-        setWsConnected(true);
-      }
-    };
-    checkWs();
-    const interval = setInterval(checkWs, 5000);
-    return () => clearInterval(interval);
-  }, []);
+  const pendingCountsQuery = trpc.adminFinance.pendingActionCounts.useQuery(
+    { token: accessToken ?? "" },
+    {
+      enabled: !!user && !!accessToken,
+      refetchInterval: 20_000,
+      staleTime: 10_000,
+    }
+  );
+
+  const invalidatePendingCounts = useCallback(() => {
+    void utils.adminFinance.pendingActionCounts.invalidate();
+  }, [utils]);
+
+  const { connected: wsConnected, unreadOrders, clearUnread } = useAdminNotifications({
+    accessToken,
+    enabled: !!user && !!accessToken,
+    hasPermission,
+    onRealtimeOrder: invalidatePendingCounts,
+  });
 
   const visibleSections = NAV_SECTIONS.map(section => ({
     ...section,
@@ -146,6 +164,9 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                 <CollapsibleContent className="space-y-0.5 mt-0.5">
                   {section.items.map(item => {
                     const isActive = location === item.path || (item.path !== "/admin" && location.startsWith(item.path));
+                    const d = pendingCountsQuery.data?.deposits ?? 0;
+                    const w = pendingCountsQuery.data?.withdrawals ?? 0;
+                    const navBadge = pendingBadgeForPath(item.path, d, w);
                     return (
                       <Link key={item.path} href={item.path}>
                         <div
@@ -157,13 +178,18 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                           onClick={() => setSidebarOpen(false)}
                         >
                           <item.icon className={`w-4 h-4 shrink-0 ${isActive ? "text-primary" : ""}`} />
-                          <span className="truncate">{item.label}</span>
-                          {item.badge && item.badge > 0 && (
-                            <Badge variant="destructive" className="ml-auto h-5 min-w-[20px] text-[10px] px-1.5">
-                              {item.badge}
-                            </Badge>
-                          )}
-                          {isActive && <ChevronRight className="w-3 h-3 ml-auto text-primary/50" />}
+                          <span className="truncate flex-1 min-w-0">{item.label}</span>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {navBadge != null && navBadge > 0 && (
+                              <span
+                                className="flex h-5 min-w-5 items-center justify-center rounded-full bg-orange-500 px-1.5 text-[10px] font-bold leading-none text-white tabular-nums shadow-sm"
+                                title={`${navBadge} pending`}
+                              >
+                                {navBadge > 99 ? "99+" : navBadge}
+                              </span>
+                            )}
+                            {isActive && <ChevronRight className="w-3 h-3 text-primary/50" />}
+                          </div>
                         </div>
                       </Link>
                     );
@@ -196,11 +222,17 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           </Button>
           <h1 className="font-semibold text-sm lg:hidden">TgGaming Admin</h1>
           <div className="flex-1" />
-          <Button variant="ghost" size="icon" className="relative" onClick={() => { /* TODO: notification panel */ }}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="relative"
+            title={unreadOrders > 0 ? `${unreadOrders} new order(s) — click to clear badge` : "Notifications"}
+            onClick={() => clearUnread()}
+          >
             <Bell className="w-4 h-4" />
-            {pendingCount > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 w-4 h-4 bg-red-500 text-white text-[9px] rounded-full flex items-center justify-center">
-                {pendingCount}
+            {unreadOrders > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-0.5 bg-red-500 text-white text-[9px] rounded-full flex items-center justify-center">
+                {unreadOrders > 99 ? "99+" : unreadOrders}
               </span>
             )}
           </Button>

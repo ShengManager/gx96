@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { usePlayerAuth } from "@/contexts/PlayerAuthContext";
 import { trpc } from "@/lib/trpc";
+import { cn } from "@/lib/utils";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -14,17 +15,36 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+function groupBonusesForDisplay(list: any[]) {
+  const sorted = [...list].sort((a, b) => (Number(a.sortOrder) || 0) - (Number(b.sortOrder) || 0));
+  const buckets = new Map<string, any[]>();
+  for (const b of sorted) {
+    const key = String(b.promoGroupKey ?? "").trim() || "__ungrouped__";
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key)!.push(b);
+  }
+  return Array.from(buckets.entries())
+    .map(([key, items]) => ({
+      key,
+      items: [...items].sort((a, b) => (Number(a.sortOrder) || 0) - (Number(b.sortOrder) || 0)),
+      title: items.find((x) => x.promoGroupTitle)?.promoGroupTitle ?? null,
+      bannerUrl: items.find((x) => x.promoGroupBannerUrl)?.promoGroupBannerUrl ?? null,
+      groupSort: Math.min(...items.map((x) => Number(x.promoGroupSort ?? 0))),
+    }))
+    .sort((a, b) => a.groupSort - b.groupSort || String(a.key).localeCompare(String(b.key)));
+}
+
 export default function PlayerBonus() {
-  const { accessToken, isAuthenticated } = usePlayerAuth();
+  const { accessToken, isAuthenticated, loading: authLoading } = usePlayerAuth();
   const [selectedBonus, setSelectedBonus] = useState<any>(null);
 
   const bonusListQuery = trpc.player.bonusList.useQuery(
     { token: accessToken || "" },
-    { enabled: !!accessToken }
+    { enabled: !!accessToken && !authLoading, retry: 2 }
   );
   const myBonusesQuery = trpc.player.myBonuses.useQuery(
     { token: accessToken || "" },
-    { enabled: !!accessToken }
+    { enabled: !!accessToken && !authLoading, retry: 2 }
   );
 
   const claimMutation = trpc.player.claimBonus.useMutation({
@@ -42,6 +62,20 @@ export default function PlayerBonus() {
     onError: (err: any) => toast.error(err.message),
   });
 
+  const bonuses = (bonusListQuery.data as any) || [];
+  const myBonuses = (myBonusesQuery.data as any[]) || [];
+  const activeBonuses = myBonuses.filter((b) => b.status === "active");
+  const bonusGroups = useMemo(() => groupBonusesForDisplay(bonuses), [bonuses]);
+
+  if (authLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-24 px-4">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        <p className="text-sm text-muted-foreground mt-3">Loading session…</p>
+      </div>
+    );
+  }
+
   if (!isAuthenticated) {
     return (
       <div className="flex flex-col items-center justify-center py-20 px-4 text-center">
@@ -54,10 +88,6 @@ export default function PlayerBonus() {
       </div>
     );
   }
-
-  const bonuses = (bonusListQuery.data as any) || [];
-  const myBonuses = (myBonusesQuery.data as any[]) || [];
-  const activeBonuses = myBonuses.filter(b => b.status === "active");
 
   return (
     <div className="space-y-5 pt-4 pb-4">
@@ -79,96 +109,130 @@ export default function PlayerBonus() {
         </div>
 
         {/* Available Bonuses */}
-        <TabsContent value="available" className="px-4 space-y-3">
-          {bonusListQuery.isLoading ? (
+        <TabsContent value="available" className="px-4 space-y-6">
+          {bonusListQuery.isPending ? (
             <div className="flex items-center justify-center py-16">
               <Loader2 className="w-6 h-6 animate-spin text-primary" />
             </div>
+          ) : bonusListQuery.isError ? (
+            <div className="text-center py-16 space-y-2">
+              <p className="text-sm text-destructive">Failed to load promotions</p>
+              <p className="text-xs text-muted-foreground">
+                {bonusListQuery.error?.message || "Please try again later."}
+              </p>
+              <Button variant="outline" size="sm" className="mt-2" onClick={() => bonusListQuery.refetch()}>
+                Retry
+              </Button>
+            </div>
           ) : bonuses.length > 0 ? (
-            bonuses.map((bonus: any) => {
-              const canClaim = !!bonus.canClaim;
-              const blockedReason = String(bonus.claimBlockedReason || "Not eligible");
-              return (
-                <Card
-                  key={bonus.id}
-                  className="overflow-hidden cursor-pointer hover:ring-1 hover:ring-primary/30 transition-all group active:scale-[0.99]"
-                  onClick={() => setSelectedBonus(bonus)}
-                >
-                  {bonus.cardImageUrl ? (
-                    <div className="aspect-[2.5/1] bg-muted relative overflow-hidden">
-                      <img src={bonus.cardImageUrl} alt={bonus.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" loading="lazy" />
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
-                      <div className="absolute bottom-3 left-3 right-3">
-                        <h3 className="font-bold text-white text-sm">{bonus.name}</h3>
+            bonusGroups.map((group) => (
+              <section key={group.key} className="space-y-2">
+                {(group.bannerUrl || group.title) && (
+                  <div className="space-y-1.5">
+                    {group.bannerUrl && (
+                      <div className="w-1/2 max-w-[50%]">
+                        <img
+                          src={group.bannerUrl}
+                          alt=""
+                          className="w-full h-auto block object-contain"
+                          loading="lazy"
+                        />
                       </div>
-                      {!canClaim && (
-                        <div className="absolute top-2 right-2">
-                          <span className="text-[10px] font-semibold px-2 py-1 rounded-full bg-amber-500/90 text-white flex items-center gap-1">
-                            <Clock className="w-3 h-3" /> Unavailable
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="aspect-[2.5/1] relative overflow-hidden" style={{
-                      background: "linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #ec4899 100%)",
-                    }}>
-                      <div className="absolute top-0 right-0 w-24 h-24 rounded-full bg-white/10 -translate-y-6 translate-x-6" />
-                      <div className="absolute bottom-0 left-0 w-16 h-16 rounded-full bg-white/5 translate-y-4 -translate-x-4" />
-                      <div className="relative z-10 p-4 flex items-center justify-between h-full">
-                        <div>
-                          <h3 className="font-bold text-white">{bonus.name}</h3>
-                          <p className="text-white/70 text-xs mt-1 line-clamp-1">{bonus.description || "Tap for details"}</p>
-                        </div>
-                        <Gift className="w-10 h-10 text-white/30" />
-                      </div>
-                      {!canClaim && (
-                        <div className="absolute top-2 right-2">
-                          <span className="text-[10px] font-semibold px-2 py-1 rounded-full bg-amber-500/90 text-white flex items-center gap-1">
-                            <Clock className="w-3 h-3" /> Unavailable
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  <CardContent className="p-3">
-                    {!bonus.cardImageUrl && (
-                      <p className="text-xs text-muted-foreground line-clamp-2 mb-2">{bonus.description || "Tap for details"}</p>
                     )}
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      {bonus.bonusType === 0 && (
-                        <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-green-500/10 text-green-500 border border-green-500/20 flex items-center gap-1">
-                          <DollarSign className="w-3 h-3" /> {parseFloat(bonus.fixedAmount || 0).toFixed(2)}
-                        </span>
-                      )}
-                      {bonus.bonusType === 1 && (
-                        <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-500 border border-blue-500/20 flex items-center gap-1">
-                          <Percent className="w-3 h-3" /> {parseFloat(bonus.percentage || 0)}%
-                        </span>
-                      )}
-                      {bonus.bonusType === 2 && (
-                        <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-500 border border-purple-500/20 flex items-center gap-1">
-                          <Shuffle className="w-3 h-3" /> Random
-                        </span>
-                      )}
-                      {bonus.rolloverMultiplier && (
-                        <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500 border border-amber-500/20">
-                          x{bonus.rolloverMultiplier} Rollover
-                        </span>
-                      )}
-                      <span className="ml-auto text-[10px] text-primary flex items-center gap-0.5">
-                        Details <ArrowRight className="w-3 h-3" />
-                      </span>
-                    </div>
-                    {!canClaim && (
-                      <p className="text-[10px] text-amber-500 mt-1 line-clamp-1">
-                        {blockedReason}
-                      </p>
+                    {group.title && (
+                      <h3 className="text-sm font-bold tracking-wide text-foreground/95 px-0.5">{group.title}</h3>
                     )}
-                  </CardContent>
-                </Card>
-              );
-            })
+                  </div>
+                )}
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
+                  {group.items.map((bonus: any) => {
+                    const canClaim = !!bonus.canClaim;
+                    const blockedReason = String(bonus.claimBlockedReason || "Not eligible");
+                    return (
+                      <Card
+                        key={bonus.id}
+                        className={cn(
+                          "overflow-hidden cursor-pointer transition-all group active:scale-[0.98] flex flex-col min-h-0 border",
+                          canClaim
+                            ? "border-amber-400/50 shadow-[0_0_20px_-6px_rgba(251,191,36,0.55)] ring-1 ring-amber-300/35 hover:ring-amber-200/50"
+                            : "border-white/10 opacity-[0.42] grayscale-[25%] brightness-[0.78] hover:opacity-55"
+                        )}
+                        onClick={() => setSelectedBonus(bonus)}
+                      >
+                        <div className="relative shrink-0 h-[4.5rem] sm:h-[5rem] bg-muted">
+                          {bonus.cardImageUrl ? (
+                            <img
+                              src={bonus.cardImageUrl}
+                              alt=""
+                              className={cn(
+                                "w-full h-full object-cover transition-transform duration-300",
+                                canClaim && "group-hover:scale-105"
+                              )}
+                              loading="lazy"
+                            />
+                          ) : (
+                            <div
+                              className="w-full h-full flex items-center justify-center p-2"
+                              style={{
+                                background: "linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #ec4899 100%)",
+                              }}
+                            >
+                              <Gift className={cn("w-8 h-8", canClaim ? "text-white/90" : "text-white/40")} />
+                            </div>
+                          )}
+                          {!canClaim && (
+                            <div className="absolute inset-0 bg-black/45 pointer-events-none" />
+                          )}
+                          <div className="absolute top-1 right-1 flex flex-col items-end gap-0.5">
+                            <span
+                              className={cn(
+                                "text-[9px] font-bold px-1.5 py-0.5 rounded-md uppercase tracking-wide",
+                                canClaim
+                                  ? "bg-amber-400 text-black shadow-sm"
+                                  : "bg-zinc-800/90 text-zinc-300"
+                              )}
+                            >
+                              {canClaim ? "Eligible" : "Locked"}
+                            </span>
+                          </div>
+                        </div>
+                        <CardContent className="p-2 flex flex-col flex-1 gap-1">
+                          <h3 className="font-semibold text-[11px] sm:text-xs leading-tight line-clamp-2 min-h-[2rem]">
+                            {bonus.name}
+                          </h3>
+                          <div className="flex items-center gap-1 flex-wrap mt-auto">
+                            {bonus.bonusType === 0 && (
+                              <span className="text-[9px] font-medium px-1 py-0.5 rounded bg-green-500/15 text-green-400 border border-green-500/25">
+                                ${parseFloat(bonus.fixedAmount || 0).toFixed(2)}
+                              </span>
+                            )}
+                            {bonus.bonusType === 1 && (
+                              <span className="text-[9px] font-medium px-1 py-0.5 rounded bg-blue-500/15 text-blue-400 border border-blue-500/25">
+                                {parseFloat(bonus.percentage || 0)}%
+                              </span>
+                            )}
+                            {bonus.bonusType === 2 && (
+                              <span className="text-[9px] font-medium px-1 py-0.5 rounded bg-purple-500/15 text-purple-400 border border-purple-500/25">
+                                Random
+                              </span>
+                            )}
+                            {!!bonus.rolloverMultiplier && Number(bonus.rolloverMultiplier) > 0 && (
+                              <span className="text-[9px] text-amber-500/90">x{bonus.rolloverMultiplier}</span>
+                            )}
+                          </div>
+                          {!canClaim && (
+                            <p className="text-[9px] text-amber-600/90 line-clamp-2 leading-snug">{blockedReason}</p>
+                          )}
+                          <span className="text-[9px] text-primary flex items-center gap-0.5 justify-end pt-0.5">
+                            Details <ArrowRight className="w-2.5 h-2.5" />
+                          </span>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </div>
+              </section>
+            ))
           ) : (
             <div className="text-center py-16">
               <Gift className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
@@ -179,9 +243,10 @@ export default function PlayerBonus() {
         </TabsContent>
 
         {/* Active Bonuses */}
-        <TabsContent value="active" className="px-4 space-y-3">
+        <TabsContent value="active" className="px-4">
           {activeBonuses.length > 0 ? (
-            activeBonuses.map((pb: any) => {
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            {activeBonuses.map((pb: any) => {
               const rolloverPct = pb.rolloverRequired
                 ? Math.min(100, (parseFloat(pb.currentRollover || 0) / parseFloat(pb.rolloverRequired)) * 100)
                 : 0;
@@ -191,7 +256,7 @@ export default function PlayerBonus() {
 
               return (
                 <Card key={pb.id} className="overflow-hidden">
-                  <CardContent className="pt-5 space-y-3">
+                  <CardContent className="pt-4 pb-4 space-y-3">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
@@ -241,7 +306,8 @@ export default function PlayerBonus() {
                   </CardContent>
                 </Card>
               );
-            })
+            })}
+            </div>
           ) : (
             <div className="text-center py-16">
               <Trophy className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />

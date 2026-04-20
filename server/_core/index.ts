@@ -13,9 +13,11 @@ import { startAllBots } from "../services/telegramBot";
 import { nanoid } from "nanoid";
 import multer from "multer";
 import { verifyAccessToken, refreshAccessToken } from "../services/auth";
-import { getDb } from "../db";
-import { deposits } from "../../drizzle/schema";
+import { getDb, createAdminLog } from "../db";
+import { deposits, adminMediaLibrary } from "../../drizzle/schema";
 import { eq, and } from "drizzle-orm";
+import { checkPermission } from "../services/middleware";
+import { TRPCError } from "@trpc/server";
 import {
   cloudwaveS3GetSignedUrl,
   isCloudwaveS3Configured,
@@ -114,6 +116,81 @@ async function startServer() {
       return res.json({ url: previewUrl, rawUrl: url, key, category });
     } catch (err: any) {
       console.error("[Upload] /api/upload failed:", err);
+      return res.status(500).json({ error: err.message || "Upload failed" });
+    }
+  });
+
+  /**
+   * Admin media library: multipart image upload (Bearer admin JWT).
+   * Form field name: file
+   */
+  app.post("/api/admin/upload/media", playerImageUpload.single("file"), async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader?.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+      const payload = verifyAccessToken(authHeader.slice(7));
+      if (!payload || payload.type !== "admin" || payload.adminId == null) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+
+      await checkPermission(payload.id, payload.role || "sub", "banner", "edit");
+
+      const file = req.file;
+      if (!file?.buffer?.length) {
+        return res.status(400).json({ error: "No file uploaded (field name: file)" });
+      }
+
+      const ext = extFromFile(file);
+      const objectKey = `gx96/a${payload.adminId}/library/${nanoid(12)}.${ext}`;
+      const contentType =
+        file.mimetype && file.mimetype !== "application/octet-stream"
+          ? file.mimetype
+          : `image/${ext === "jpg" ? "jpeg" : ext}`;
+
+      const { key: storedKey, url } = await storagePut(objectKey, file.buffer, contentType);
+
+      const previewUrl = isCloudwaveS3Configured()
+        ? `/api/media/s3?key=${encodeURIComponent(storedKey)}`
+        : url;
+
+      const db = await getDb();
+      if (!db) {
+        return res.status(500).json({ error: "Database unavailable" });
+      }
+
+      const inserted = await db.insert(adminMediaLibrary).values({
+        adminId: payload.adminId,
+        objectKey: storedKey,
+        publicUrl: isCloudwaveS3Configured() ? null : url,
+        originalName: file.originalname ? file.originalname.slice(0, 256) : null,
+        contentType,
+        byteSize: file.size,
+      });
+
+      const insertId = inserted[0].insertId as number;
+
+      await createAdminLog({
+        adminId: payload.id,
+        action: "upload_media",
+        module: "banner",
+        targetId: insertId,
+        targetType: "admin_media",
+        details: { objectKey: storedKey },
+      });
+
+      return res.json({
+        id: insertId,
+        previewUrl,
+        objectKey: storedKey,
+        rawUrl: url,
+      });
+    } catch (err: any) {
+      if (err instanceof TRPCError && err.code === "FORBIDDEN") {
+        return res.status(403).json({ error: err.message });
+      }
+      console.error("[Upload] /api/admin/upload/media failed:", err);
       return res.status(500).json({ error: err.message || "Upload failed" });
     }
   });

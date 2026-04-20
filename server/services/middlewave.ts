@@ -374,27 +374,26 @@ export async function getActiveProviders(
 }
 
 // ─── Check All Provider Balances (dynamic providers) ───
+/** Pass `providersOverride` to avoid calling ProjectInfo again (e.g. admin player detail loops identities). */
 export async function checkAllProviderBalances(
   config: MiddlewaveConfig,
-  playerId: string
+  playerId: string,
+  providersOverride?: string[]
 ): Promise<Array<{ provider: string; balance: number; error?: string }>> {
-  const results: Array<{ provider: string; balance: number; error?: string }> = [];
+  const providers =
+    providersOverride && providersOverride.length > 0 ? providersOverride : await getActiveProviders(config);
 
-  // Use dynamic provider list from ProjectInfo
-  const providers = await getActiveProviders(config);
-
-  for (const provider of providers) {
-    try {
-      const res = await checkBalance(config, provider, playerId);
-      if (res.success && res.balance !== undefined) {
-        results.push({ provider, balance: res.balance });
-      } else {
-        results.push({ provider, balance: 0, error: res.error || res.message });
+  return Promise.all(
+    providers.map(async (provider) => {
+      try {
+        const res = await checkBalance(config, provider, playerId);
+        if (res.success && res.balance !== undefined) {
+          return { provider, balance: res.balance };
+        }
+        return { provider, balance: 0, error: res.error || res.message };
+      } catch (err: any) {
+        return { provider, balance: 0, error: err.message };
       }
-    } catch (err: any) {
-      results.push({ provider, balance: 0, error: err.message });
-    }
-  }
-
-  return results;
+    })
+  );
 }

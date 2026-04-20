@@ -74,7 +74,6 @@ export default function AdminSettings() {
           <TabsTrigger value="system"><Settings className="w-4 h-4 mr-1" /> System</TabsTrigger>
           <TabsTrigger value="countries"><Globe className="w-4 h-4 mr-1" /> Countries</TabsTrigger>
           <TabsTrigger value="telegram"><Bot className="w-4 h-4 mr-1" /> Telegram</TabsTrigger>
-          <TabsTrigger value="frontend"><Palette className="w-4 h-4 mr-1" /> Frontend</TabsTrigger>
           <TabsTrigger value="domains"><Lock className="w-4 h-4 mr-1" /> Domain ACL</TabsTrigger>
           <TabsTrigger value="password"><Lock className="w-4 h-4 mr-1" /> Password</TabsTrigger>
           {user?.role === "master" && (
@@ -85,7 +84,6 @@ export default function AdminSettings() {
         <TabsContent value="system"><SystemSettings accessToken={accessToken!} canEdit={canEdit} /></TabsContent>
         <TabsContent value="countries"><CountrySettings accessToken={accessToken!} canEdit={canEdit} /></TabsContent>
         <TabsContent value="telegram"><TelegramSettings accessToken={accessToken!} canEdit={canEdit} /></TabsContent>
-        <TabsContent value="frontend"><FrontendSettingsTab accessToken={accessToken!} canEdit={canEdit} /></TabsContent>
         <TabsContent value="domains"><DomainAclSettings accessToken={accessToken!} canEdit={canEdit} /></TabsContent>
         <TabsContent value="password"><PasswordChangeTab accessToken={accessToken!} /></TabsContent>
         {user?.role === "master" && (

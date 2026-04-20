@@ -1,6 +1,12 @@
+/**
+ * Must stay in sync with token signing in `server/services/auth.ts` (jsonwebtoken).
+ * If unset, dev used to get empty string for jose cookies while auth used a default — signatures never matched.
+ */
+export const JWT_SECRET = process.env.JWT_SECRET || "tggaming-secret-key";
+
 export const ENV = {
   appId: process.env.VITE_APP_ID ?? "",
-  cookieSecret: process.env.JWT_SECRET ?? "",
+  cookieSecret: JWT_SECRET,
   databaseUrl: process.env.DATABASE_URL ?? "",
   oAuthServerUrl: process.env.OAUTH_SERVER_URL ?? "",
   ownerOpenId: process.env.OWNER_OPEN_ID ?? "",

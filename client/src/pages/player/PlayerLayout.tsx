@@ -1,4 +1,4 @@
-import { ReactNode } from "react";
+import { ReactNode, useEffect, useMemo, useState } from "react";
 import { useLocation, Link } from "wouter";
 import { usePlayerAuth } from "@/contexts/PlayerAuthContext";
 import { trpc } from "@/lib/trpc";
@@ -15,14 +15,129 @@ const NAV_ITEMS = [
   { path: "/profile", label: "Profile", icon: User },
 ];
 
+type LayoutCode = { css?: string; headHtml?: string; bodyHtml?: string; bodyJs?: string };
+
+function getLayoutKey(pathname: string): string {
+  if (pathname === "/" || pathname.startsWith("/?")) return "home";
+  if (pathname.startsWith("/games")) return "game";
+  if (pathname.startsWith("/deposit")) return "deposit";
+  if (pathname.startsWith("/withdraw")) return "withdraw";
+  if (pathname.startsWith("/bonus")) return "bonus";
+  if (pathname.startsWith("/profile")) return "profile";
+  if (pathname.startsWith("/history")) return "history";
+  return "home";
+}
+
+function clearInjectedHeadNodes() {
+  document
+    .querySelectorAll('[data-layout-head-injected="1"]')
+    .forEach((node) => node.parentNode?.removeChild(node));
+}
+
+function appendHeadHtml(html: string) {
+  if (!html.trim()) return;
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  for (const node of Array.from(template.content.childNodes)) {
+    if (node.nodeType !== Node.ELEMENT_NODE) continue;
+    (node as Element).setAttribute("data-layout-head-injected", "1");
+    document.head.appendChild(node);
+  }
+}
+
+function setStyleInjection(css: string) {
+  const id = "__layout_injected_css__";
+  let styleTag = document.getElementById(id) as HTMLStyleElement | null;
+  if (!css.trim()) {
+    styleTag?.remove();
+    return;
+  }
+  if (!styleTag) {
+    styleTag = document.createElement("style");
+    styleTag.id = id;
+    document.head.appendChild(styleTag);
+  }
+  styleTag.textContent = css;
+}
+
+function runBodyJs(js: string) {
+  const id = "__layout_injected_body_js__";
+  const old = document.getElementById(id);
+  if (old) old.remove();
+  if (!js.trim()) return;
+  const script = document.createElement("script");
+  script.id = id;
+  script.type = "text/javascript";
+  script.text = js;
+  document.body.appendChild(script);
+}
+
 export default function PlayerLayout({ children }: { children: ReactNode }) {
   const [location] = useLocation();
   const { isAuthenticated, accessToken } = usePlayerAuth();
+  const [logoLoadFailed, setLogoLoadFailed] = useState(false);
+
+  const frontendLayoutQuery = trpc.player.frontendLayout.useQuery(
+    { token: accessToken || "" },
+    { enabled: true }
+  );
 
   const balanceQuery = trpc.player.balance.useQuery(
     { token: accessToken || "" },
     { enabled: !!accessToken, refetchInterval: 30000 }
   );
+
+  const layoutKey = getLayoutKey(location);
+  const layoutConfig = (frontendLayoutQuery.data as any) || null;
+  const siteName = String(layoutConfig?.siteName || "").trim();
+  const logoUrl = String(layoutConfig?.logoUrl || "").trim();
+  const footerText = String(layoutConfig?.footerText || "").trim();
+
+  const mergedCode = useMemo(() => {
+    const map = (layoutConfig?.layoutInjections || {}) as Record<string, LayoutCode>;
+    const globalCode = map.global || {};
+    const pageCode = map[layoutKey] || (layoutKey === "game" ? map.games || {} : {});
+    return {
+      css: [layoutConfig?.customCss || "", globalCode.css || "", pageCode.css || ""].filter(Boolean).join("\n"),
+      headHtml: [layoutConfig?.customHeadHtml || "", globalCode.headHtml || "", pageCode.headHtml || ""].filter(Boolean).join("\n"),
+      bodyHtml: [globalCode.bodyHtml || "", pageCode.bodyHtml || ""].filter(Boolean).join("\n"),
+      bodyJs: [layoutConfig?.customBodyJs || "", globalCode.bodyJs || "", pageCode.bodyJs || ""].filter(Boolean).join("\n"),
+    };
+  }, [layoutConfig, layoutKey]);
+
+  useEffect(() => {
+    document.title = siteName || "TgGaming";
+  }, [siteName]);
+
+  useEffect(() => {
+    setLogoLoadFailed(false);
+  }, [logoUrl]);
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const applyAfterRenderStable = () => {
+      timer = setTimeout(() => {
+        setStyleInjection(mergedCode.css);
+        clearInjectedHeadNodes();
+        appendHeadHtml(mergedCode.headHtml);
+        runBodyJs(mergedCode.bodyJs);
+      }, 250);
+    };
+
+    if (document.readyState === "complete") {
+      applyAfterRenderStable();
+    } else {
+      const onLoad = () => applyAfterRenderStable();
+      window.addEventListener("load", onLoad, { once: true });
+    }
+
+    return () => {
+      if (timer) clearTimeout(timer);
+      clearInjectedHeadNodes();
+      setStyleInjection("");
+      runBodyJs("");
+    };
+  }, [mergedCode.css, mergedCode.headHtml, mergedCode.bodyJs, location]);
 
   const balance = (balanceQuery.data as any)?.balance;
 
@@ -32,12 +147,24 @@ export default function PlayerLayout({ children }: { children: ReactNode }) {
       <header className="sticky top-0 z-40 bg-card/80 backdrop-blur-xl border-b border-white/5 px-4 py-2.5 flex items-center justify-between">
         <Link href="/">
           <div className="flex items-center gap-2.5 cursor-pointer">
-            <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{
-              background: "linear-gradient(135deg, #6366f1 0%, #a855f7 100%)",
-            }}>
-              <Gamepad2 className="w-5 h-5 text-white" />
-            </div>
-            <span className="font-bold text-lg tracking-tight">TgGaming</span>
+            {logoUrl && !logoLoadFailed ? (
+              <img
+                src={logoUrl}
+                alt=""
+                className="h-9 w-auto object-contain block"
+                onError={() => setLogoLoadFailed(true)}
+              />
+            ) : (
+              <div
+                className="w-9 h-9 rounded-xl flex items-center justify-center"
+                style={{ background: "linear-gradient(135deg, #6366f1 0%, #a855f7 100%)" }}
+              >
+                <Gamepad2 className="w-5 h-5 text-white" />
+              </div>
+            )}
+            {siteName && (
+              <span className="font-bold text-lg tracking-tight">{siteName}</span>
+            )}
           </div>
         </Link>
 
@@ -79,6 +206,17 @@ export default function PlayerLayout({ children }: { children: ReactNode }) {
       {/* Main content */}
       <main className="flex-1 pb-24 w-full max-w-[1280px] mx-auto">
         {children}
+        {mergedCode.bodyHtml && (
+          <div
+            className="px-4 py-4"
+            dangerouslySetInnerHTML={{ __html: mergedCode.bodyHtml }}
+          />
+        )}
+        {footerText && (
+          <div className="px-4 py-5 text-center text-xs text-muted-foreground/80">
+            {footerText}
+          </div>
+        )}
       </main>
 
       {/* Bottom navbar */}

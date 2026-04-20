@@ -3,9 +3,8 @@ import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { eq, and, lt } from "drizzle-orm";
 import { getDb } from "../db";
+import { JWT_SECRET } from "../_core/env";
 import { adminAccounts, refreshTokens, players } from "../../drizzle/schema";
-
-const JWT_SECRET = process.env.JWT_SECRET || "tggaming-secret-key";
 const ACCESS_TOKEN_EXPIRY = "15m";
 const REFRESH_TOKEN_EXPIRY_DAYS = 30;
 

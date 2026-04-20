@@ -169,7 +169,7 @@ export default function AdminPlayers() {
               <Eye className="w-5 h-5" /> Player Detail #{selectedPlayer}
             </DialogTitle>
           </DialogHeader>
-          {detailQuery.isLoading ? (
+          {detailQuery.isPending ? (
             <div className="py-12 flex flex-col items-center gap-2">
               <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
               <p className="text-sm text-muted-foreground">Loading player details...</p>
@@ -478,7 +478,8 @@ function PlayerDetail({
     const bonuses = (data.bonuses || []).map((b: any) => ({
       id: `bonus-${b.id}`,
       rawId: b.id,
-      type: b.status === "forfeited" ? "forfeited" : "bonus",
+      // 始终标为 bonus；是否已没收由 Status 列与第二个标签表示
+      type: "bonus" as const,
       amount: sn(b.awardedAmount ?? b.bonusAmount ?? 0),
       status: b.status || "active",
       time: b.claimedAt,
@@ -503,6 +504,20 @@ function PlayerDetail({
     withdraw: "Withdraw",
     bonus: "Bonus",
     forfeited: "Forfeited",
+  };
+
+  const txIsNegativeAmount = (tx: { type: string; status?: string }) => {
+    if (tx.type === "withdraw" || tx.type === "forfeited") return true;
+    if (tx.type === "bonus" && String(tx.status || "").toLowerCase() === "forfeited") return true;
+    return false;
+  };
+
+  const txAmountClassName = (tx: { type: string; status?: string }) => {
+    if (tx.type === "withdraw" || tx.type === "forfeited") return transactionTypeClass[tx.type];
+    if (tx.type === "bonus" && String(tx.status || "").toLowerCase() === "forfeited") {
+      return transactionTypeClass.forfeited;
+    }
+    return transactionTypeClass[tx.type] ?? "";
   };
 
   const submitOperation = () => {
@@ -715,12 +730,27 @@ function PlayerDetail({
                         {new Date(tx.time).toLocaleString()}
                       </TableCell>
                       <TableCell>
-                        <Badge variant="outline" className={`${transactionTypeClass[tx.type]} border-current/40`}>
-                          {transactionTypeLabel[tx.type]}
-                        </Badge>
+                        <div className="flex flex-wrap items-center gap-1">
+                          {String(tx.id).startsWith("bonus-") ? (
+                            <>
+                              <Badge variant="outline" className={`${transactionTypeClass.bonus} border-current/40`}>
+                                {transactionTypeLabel.bonus}
+                              </Badge>
+                              {String(tx.status || "").toLowerCase() === "forfeited" && (
+                                <Badge variant="outline" className={`${transactionTypeClass.forfeited} border-current/40`}>
+                                  {transactionTypeLabel.forfeited}
+                                </Badge>
+                              )}
+                            </>
+                          ) : (
+                            <Badge variant="outline" className={`${transactionTypeClass[tx.type]} border-current/40`}>
+                              {transactionTypeLabel[tx.type]}
+                            </Badge>
+                          )}
+                        </div>
                       </TableCell>
-                      <TableCell className={`text-right font-semibold ${transactionTypeClass[tx.type]}`}>
-                        {tx.type === "withdraw" || tx.type === "forfeited" ? "-" : "+"}
+                      <TableCell className={`text-right font-semibold ${txAmountClassName(tx)}`}>
+                        {txIsNegativeAmount(tx) ? "-" : "+"}
                         {fmtCurrency(tx.amount)}
                       </TableCell>
                       <TableCell>
@@ -963,8 +993,10 @@ function PlayerDetail({
                     {middlewaveGameLogs.slice(0, 50).map((g: any, idx: number) => {
                       const entryType = String(g.entryType || "game");
                       const isDepositMarker = entryType === "deposit";
+                      const isBonusMarker = entryType === "bonus";
                       const isForfeitMarker = entryType === "forfeited";
                       const isWithdrawMarker = entryType === "withdraw";
+                      const bonusStatus = String(g.bonusStatus || "").toLowerCase();
                       const wl = sn(g.winLose);
                       const markerAmount = sn(g.eventAmount || 0);
                       return (
@@ -972,26 +1004,55 @@ function PlayerDetail({
                           <td className="px-2 py-2 whitespace-nowrap">{g.transactionDate ? new Date(g.transactionDate).toLocaleString() : "-"}</td>
                           <td className="px-2 py-2">{g.provider || "-"}</td>
                           <td className="px-2 py-2">
-                            <div className={`truncate max-w-[220px] ${
+                            <div className={`truncate max-w-[260px] ${
                               isDepositMarker
                                 ? "text-emerald-300 font-semibold"
-                                : isForfeitMarker || isWithdrawMarker
-                                  ? "text-rose-300 font-semibold"
-                                  : ""
+                                : isBonusMarker
+                                  ? "text-amber-300 font-semibold"
+                                  : isForfeitMarker || isWithdrawMarker
+                                    ? "text-rose-300 font-semibold"
+                                    : ""
                             }`}>
-                              {isDepositMarker ? "DEPOSIT" : isForfeitMarker ? "FORFEITED" : isWithdrawMarker ? "WITHDRAW" : (g.gameName || g.gameCode || "-")}
+                              {isDepositMarker ? (
+                                "DEPOSIT"
+                              ) : isBonusMarker ? (
+                                <span className="inline-flex flex-wrap items-center gap-1">
+                                  <span>BONUS</span>
+                                  {bonusStatus === "forfeited" && (
+                                    <span className="text-rose-300/90 text-[10px] font-normal normal-case">（记录已没收）</span>
+                                  )}
+                                </span>
+                              ) : isForfeitMarker ? (
+                                "FORFEITED"
+                              ) : isWithdrawMarker ? (
+                                "WITHDRAW"
+                              ) : (
+                                g.gameName || g.gameCode || "-"
+                              )}
                             </div>
                           </td>
                           <td className="px-2 py-2 text-right font-mono">
-                            {isDepositMarker || isForfeitMarker || isWithdrawMarker ? fmtCurrency(markerAmount) : fmtCurrency(g.betAmount || 0)}
+                            {isDepositMarker || isBonusMarker || isForfeitMarker || isWithdrawMarker ? fmtCurrency(markerAmount) : fmtCurrency(g.betAmount || 0)}
                           </td>
                           <td className="px-2 py-2 text-right font-mono">
-                            {isDepositMarker || isForfeitMarker || isWithdrawMarker ? "-" : fmtCurrency(g.payout || 0)}
+                            {isDepositMarker || isBonusMarker || isForfeitMarker || isWithdrawMarker ? "-" : fmtCurrency(g.payout || 0)}
                           </td>
                           <td className={`px-2 py-2 text-right font-mono ${
-                            isForfeitMarker || isWithdrawMarker ? "text-rose-400" : wl >= 0 ? "text-emerald-400" : "text-red-400"
+                            isForfeitMarker || isWithdrawMarker
+                              ? "text-rose-400"
+                              : isBonusMarker
+                                ? "text-amber-400"
+                                : wl >= 0
+                                  ? "text-emerald-400"
+                                  : "text-red-400"
                           }`}>
-                            {isDepositMarker ? "-" : isForfeitMarker || isWithdrawMarker ? `-${markerAmount.toFixed(2)}` : `${wl >= 0 ? "+" : ""}${wl.toFixed(2)}`}
+                            {isDepositMarker
+                              ? "-"
+                              : isBonusMarker
+                                ? `+${markerAmount.toFixed(2)}`
+                                : isForfeitMarker || isWithdrawMarker
+                                  ? `-${markerAmount.toFixed(2)}`
+                                  : `${wl >= 0 ? "+" : ""}${wl.toFixed(2)}`}
                           </td>
                           <td className="px-2 py-2 text-right font-mono">
                             {fmtCurrency(g.balanceAfter || 0)}

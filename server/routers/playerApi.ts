@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { router, publicProcedure } from "../_core/trpc";
 import { TRPCError } from "@trpc/server";
-import { requirePlayer } from "../services/middleware";
+import { requirePlayer, extractTokenFromRequest } from "../services/middleware";
 import { refreshAccessToken } from "../services/auth";
 import * as db from "../db";
 import { getDb } from "../db";
@@ -14,7 +14,7 @@ import {
   createWithdrawal,
   markGameEntered,
 } from "../services/depositCycle";
-import { claimBonus, validateBonusClaim } from "../services/bonus";
+import { claimBonus, enrichBonusesWithEligibility } from "../services/bonus";
 import {
   getMiddlewaveConfig,
   checkBalance,
@@ -170,8 +170,13 @@ export const playerApiRouter = router({
       const config = await getMiddlewaveConfig(player.adminId!);
       if (!config) return { games: [] };
 
-      const result = await getGameList(config, input.provider);
-      return { games: result.games || [] };
+      try {
+        const result = await getGameList(config, input.provider);
+        return { games: result.games || [] };
+      } catch (err: any) {
+        console.warn("[player.gameList] upstream error:", err?.message || err);
+        return { games: [] };
+      }
     }),
 
   launchGame: publicProcedure
@@ -480,19 +485,7 @@ export const playerApiRouter = router({
       const player = requirePlayer(ctx);
       const bonuses = await db.getActiveBonusesByAdmin(player.adminId!);
       const claimed = await db.getPlayerBonuses(player.id);
-      const withEligibility = await Promise.all(
-        bonuses.map(async (b) => {
-          const validation = await validateBonusClaim(player.id, player.adminId!, b.id);
-          return {
-            ...b,
-            canClaim: validation.valid,
-            claimBlockedReason: validation.valid ? null : validation.failReason || "Not eligible",
-            claimedByPlayer: claimed.filter(c => c.bonusConfigId === b.id),
-          };
-        })
-      );
-
-      return withEligibility;
+      return enrichBonusesWithEligibility(player.id, player.adminId!, bonuses as any, claimed as any);
     }),
 
   claimBonus: publicProcedure
@@ -560,6 +553,26 @@ export const playerApiRouter = router({
     .query(async ({ input, ctx }) => {
       const player = requirePlayer(ctx);
       return db.getActiveBanners(player.adminId!);
+    }),
+
+  frontendLayout: publicProcedure
+    .input(z.object({ token: z.string().optional() }))
+    .query(async ({ input, ctx }) => {
+      const payload = extractTokenFromRequest(ctx.req);
+      const settings =
+        payload?.type === "player" && payload.adminId
+          ? await db.getFrontendSettings(payload.adminId)
+          : await db.getAnyFrontendSettings();
+      if (!settings) return null;
+      return {
+        siteName: settings.siteName || "",
+        logoUrl: settings.logoUrl || "",
+        footerText: settings.footerText || "",
+        customCss: settings.customCss || "",
+        customHeadHtml: settings.customHeadHtml || "",
+        customBodyJs: settings.customBodyJs || "",
+        layoutInjections: settings.layoutInjections || {},
+      };
     }),
 
   // ─── Invite ───

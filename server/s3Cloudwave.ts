@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand, GetObjectCommand, type PutObjectCommandInput } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, type PutObjectCommandInput } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { ENV } from "./_core/env";
 
@@ -60,6 +60,16 @@ export async function cloudwaveS3Put(
   }
   await getClient().send(new PutObjectCommand(input));
   return { key, url: buildCloudwaveObjectPublicUrl(key) };
+}
+
+export async function cloudwaveS3Delete(objectKey: string): Promise<void> {
+  const key = objectKey.replace(/^\/+/, "");
+  await getClient().send(
+    new DeleteObjectCommand({
+      Bucket: ENV.cloudwaveS3Bucket!,
+      Key: key,
+    })
+  );
 }
 
 export async function cloudwaveS3GetSignedUrl(objectKey: string, expiresInSeconds = 3600): Promise<string> {

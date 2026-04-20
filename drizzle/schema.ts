@@ -260,6 +260,11 @@ export const bonusConfigs = mysqlTable("bonus_configs", {
   randomMax: decimal("randomMax", { precision: 14, scale: 4 }),
   cardImageUrl: text("cardImageUrl"),
   detailImageUrl: text("detailImageUrl"),
+  /** Same key = same promo section on player /bonus (optional) */
+  promoGroupKey: varchar("promoGroupKey", { length: 128 }).default("").notNull(),
+  promoGroupTitle: varchar("promoGroupTitle", { length: 256 }),
+  promoGroupBannerUrl: text("promoGroupBannerUrl"),
+  promoGroupSort: int("promoGroupSort").default(0).notNull(),
   claimConfig: json("claimConfig"), // full ClaimConfig JSON
   rolloverMultiplier: decimal("rolloverMultiplier", { precision: 8, scale: 2 }),
   turnoverTarget: decimal("turnoverTarget", { precision: 14, scale: 4 }),
@@ -272,6 +277,28 @@ export const bonusConfigs = mysqlTable("bonus_configs", {
 });
 
 export type BonusConfig = typeof bonusConfigs.$inferSelect;
+
+/** 前台 Bonus 分组（标题/横幅/排序）；活动通过 bonus_configs.promoGroupKey 关联此处的 groupKey */
+export const bonusPromoGroups = mysqlTable(
+  "bonus_promo_groups",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    adminId: int("adminId").notNull(),
+    groupKey: varchar("groupKey", { length: 128 }).notNull(),
+    title: varchar("title", { length: 256 }),
+    bannerUrl: text("bannerUrl"),
+    /** 与拖拽布局同步：分组条在页面上的顺序 */
+    sortIndex: int("sortIndex").default(0).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("uq_bonus_promo_groups_admin_key").on(table.adminId, table.groupKey),
+    index("idx_bonus_promo_groups_admin").on(table.adminId),
+  ]
+);
+
+export type BonusPromoGroup = typeof bonusPromoGroups.$inferSelect;
 
 // ─── 14. Player Bonuses (claimed) ───
 export const playerBonuses = mysqlTable("player_bonuses", {
@@ -369,6 +396,23 @@ export const systemSettings = mysqlTable("system_settings", {
   uniqueIndex("uq_admin_setting").on(table.adminId, table.settingKey),
 ]);
 
+// ─── 18a. Admin media library (uploaded images per tenant) ───
+export const adminMediaLibrary = mysqlTable("admin_media_library", {
+  id: int("id").autoincrement().primaryKey(),
+  adminId: int("adminId").notNull(),
+  objectKey: varchar("objectKey", { length: 512 }).notNull(),
+  /** When using Forge proxy storage, browser loads this URL directly */
+  publicUrl: text("publicUrl"),
+  originalName: varchar("originalName", { length: 256 }),
+  contentType: varchar("contentType", { length: 128 }),
+  byteSize: int("byteSize"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_admin_media_admin").on(table.adminId),
+]);
+
+export type AdminMediaLibraryRow = typeof adminMediaLibrary.$inferSelect;
+
 // ─── 18. Banners ───
 export const banners = mysqlTable("banners", {
   id: int("id").autoincrement().primaryKey(),
@@ -419,6 +463,7 @@ export const frontendSettings = mysqlTable("frontend_settings", {
   customCss: text("customCss"),
   customHeadHtml: text("customHeadHtml"),
   customBodyJs: text("customBodyJs"),
+  layoutInjections: json("layoutInjections"),
   primaryColor: varchar("primaryColor", { length: 32 }),
   logoUrl: text("logoUrl"),
   faviconUrl: text("faviconUrl"),

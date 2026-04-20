@@ -13,9 +13,22 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Check, X, Bell, ChevronLeft, ChevronRight, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 
+const entryKindLabel: Record<string, string> = {
+  player_withdraw: "Withdrawal",
+  manual_withdraw: "Manual payout",
+  forfeit: "Bonus forfeit",
+};
+
+function entryKindBadgeClass(kind: string) {
+  if (kind === "forfeit") return "border-rose-400/60 text-rose-400 bg-rose-500/10";
+  if (kind === "manual_withdraw") return "border-sky-400/50 text-sky-300 bg-sky-500/10";
+  return "border-emerald-400/40 text-emerald-400/90 bg-emerald-500/10";
+}
+
 export default function AdminWithdrawals() {
   const { accessToken, hasPermission } = useAdminAuth();
   const [status, setStatus] = useState("all");
+  const [listKind, setListKind] = useState<"withdrawals" | "forfeits" | "all">("withdrawals");
   const [page, setPage] = useState(1);
   const [selectedWd, setSelectedWd] = useState<any>(null);
   const [rejectReason, setRejectReason] = useState("");
@@ -28,7 +41,13 @@ export default function AdminWithdrawals() {
   const [showHandleDialog, setShowHandleDialog] = useState(false);
 
   const wdQuery = trpc.adminFinance.withdrawals.list.useQuery(
-    { token: accessToken || "", status: status === "all" ? undefined : status, page, pageSize: 20 },
+    {
+      token: accessToken || "",
+      status: status === "all" ? undefined : status,
+      listKind,
+      page,
+      pageSize: 20,
+    },
     { enabled: !!accessToken, refetchInterval: 10000 }
   );
 
@@ -78,14 +97,24 @@ export default function AdminWithdrawals() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Withdrawal Management</h1>
-          <p className="text-muted-foreground">Review and process player withdrawals</p>
+          <p className="text-muted-foreground">
+            Player withdrawals and manual payouts. Bonus forfeits are listed separately — use the type filter below.
+          </p>
         </div>
         <Badge variant="outline" className="gap-1"><Bell className="w-3 h-3" /> Real-time</Badge>
       </div>
 
       <Card>
         <CardHeader>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <Select value={listKind} onValueChange={v => { setListKind(v as typeof listKind); setPage(1); }}>
+              <SelectTrigger className="w-[220px]"><SelectValue placeholder="Record type" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="withdrawals">Withdrawals &amp; manual payouts</SelectItem>
+                <SelectItem value="forfeits">Bonus forfeits only</SelectItem>
+                <SelectItem value="all">All record types</SelectItem>
+              </SelectContent>
+            </Select>
             <Select value={status} onValueChange={v => { setStatus(v); setPage(1); }}>
               <SelectTrigger className="w-40"><SelectValue placeholder="Filter status" /></SelectTrigger>
               <SelectContent>
@@ -96,7 +125,7 @@ export default function AdminWithdrawals() {
                 <SelectItem value="rejected">Rejected</SelectItem>
               </SelectContent>
             </Select>
-            <Badge variant="secondary">{data?.total || 0} withdrawals</Badge>
+            <Badge variant="secondary">{data?.total || 0} rows</Badge>
           </div>
         </CardHeader>
         <CardContent>
@@ -104,6 +133,7 @@ export default function AdminWithdrawals() {
             <TableHeader>
               <TableRow>
                 <TableHead>ID</TableHead>
+                <TableHead>Type</TableHead>
                 <TableHead>Player</TableHead>
                 <TableHead>Amount</TableHead>
                 <TableHead>Bank</TableHead>
@@ -118,6 +148,14 @@ export default function AdminWithdrawals() {
               {data?.withdrawals?.map((wd: any) => (
                 <TableRow key={wd.id} className={wd.status === "pending" ? "bg-yellow-50/50 dark:bg-yellow-900/5" : ""}>
                   <TableCell className="font-mono text-sm">{wd.id}</TableCell>
+                  <TableCell>
+                    <Badge
+                      variant="outline"
+                      className={`text-[10px] font-medium ${entryKindBadgeClass(wd.entryKind || "player_withdraw")}`}
+                    >
+                      {entryKindLabel[wd.entryKind] ?? "Withdrawal"}
+                    </Badge>
+                  </TableCell>
                   <TableCell className="font-mono text-sm">#{wd.playerId}</TableCell>
                   <TableCell className="font-bold">${parseFloat(wd.amount).toFixed(2)}</TableCell>
                   <TableCell className="text-sm">
@@ -153,13 +191,15 @@ export default function AdminWithdrawals() {
                           </Button>
                         )}
                         {wd.status === "processing" && (
-                          <Button size="sm" variant="default" onClick={() => { setSelectedWd(wd); setShowApproveDialog(true); }}>
-                            <Check className="w-3 h-3 mr-1" /> Approve
-                          </Button>
+                          <>
+                            <Button size="sm" variant="default" onClick={() => { setSelectedWd(wd); setShowApproveDialog(true); }}>
+                              <Check className="w-3 h-3 mr-1" /> Approve
+                            </Button>
+                            <Button size="sm" variant="destructive" onClick={() => { setSelectedWd(wd); setShowRejectDialog(true); }}>
+                              <X className="w-3 h-3 mr-1" /> Reject
+                            </Button>
+                          </>
                         )}
-                        <Button size="sm" variant="destructive" onClick={() => { setSelectedWd(wd); setShowRejectDialog(true); }}>
-                          <X className="w-3 h-3 mr-1" /> Reject
-                        </Button>
                       </div>
                     )}
                   </TableCell>
@@ -167,7 +207,7 @@ export default function AdminWithdrawals() {
               ))}
               {(!data?.withdrawals || data.withdrawals.length === 0) && (
                 <TableRow>
-                  <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={10} className="text-center py-8 text-muted-foreground">
                     {wdQuery.isLoading ? "Loading..." : "No withdrawals found"}
                   </TableCell>
                 </TableRow>

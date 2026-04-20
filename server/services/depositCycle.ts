@@ -277,7 +277,7 @@ async function syncActiveCycleProgressFromMiddlewave(params: {
         const total = Math.max(0, Number(res.total || 0));
         totalPages = total > 0 ? Math.max(1, Math.ceil(total / pageSize)) : 1;
         page += 1;
-      } while (page <= totalPages && page <= 10);
+      } while (page <= totalPages && page <= 3);
 
       if (collected.length > 0) {
         logs = collected;
@@ -325,8 +325,18 @@ async function syncActiveCycleProgressFromMiddlewave(params: {
   return { currentRollover: rollover, currentTurnover: turnover };
 }
 
+export type CheckWithdrawalConditionsOpts = {
+  /** Skip slow Middlewave game-log sync (admin UI loads MW separately). */
+  skipExternalSync?: boolean;
+  /** Skip per-provider balance probe (admin UI loads balances separately). */
+  skipProviderProbe?: boolean;
+};
+
 // ─── Check withdrawal conditions ───
-export async function checkWithdrawalConditions(playerId: number): Promise<{
+export async function checkWithdrawalConditions(
+  playerId: number,
+  opts?: CheckWithdrawalConditionsOpts
+): Promise<{
   canWithdraw: boolean;
   reason?: string;
   hasEnteredGame?: boolean;
@@ -404,34 +414,38 @@ export async function checkWithdrawalConditions(playerId: number): Promise<{
 
   // Effective withdrawable should follow real-time provider credits when available.
   let providerTotal = 0;
-  try {
-    const playerRows = await db
-      .select({ middlewavePlayerId: players.middlewavePlayerId })
-      .from(players)
-      .where(eq(players.id, playerId))
-      .limit(1);
-    const middlewavePlayerId = String(playerRows[0]?.middlewavePlayerId || "").trim();
-    const identity = middlewavePlayerId || String(playerId);
-    if (identity) {
-      const { getMiddlewaveConfig, checkAllProviderBalances } = await import("./middlewave");
-      const cfg = await getMiddlewaveConfig(cycle.adminId);
-      if (cfg) {
-        const balances = await checkAllProviderBalances(cfg, identity);
-        providerTotal = balances.reduce((sum, b) => sum + Math.max(0, Number(b.balance) || 0), 0);
+  if (!opts?.skipProviderProbe) {
+    try {
+      const playerRows = await db
+        .select({ middlewavePlayerId: players.middlewavePlayerId })
+        .from(players)
+        .where(eq(players.id, playerId))
+        .limit(1);
+      const middlewavePlayerId = String(playerRows[0]?.middlewavePlayerId || "").trim();
+      const identity = middlewavePlayerId || String(playerId);
+      if (identity) {
+        const { getMiddlewaveConfig, checkAllProviderBalances } = await import("./middlewave");
+        const cfg = await getMiddlewaveConfig(cycle.adminId);
+        if (cfg) {
+          const balances = await checkAllProviderBalances(cfg, identity);
+          providerTotal = balances.reduce((sum, b) => sum + Math.max(0, Number(b.balance) || 0), 0);
+        }
       }
+    } catch {
+      // Ignore provider probe failures and fall back to local cycle balance.
     }
-  } catch {
-    // Ignore provider probe failures and fall back to local cycle balance.
   }
   const walletBalance = providerTotal > 0 ? providerTotal : localWalletBalance;
   const maxWithdrawable = walletBalance;
 
-  const syncedProgress = await syncActiveCycleProgressFromMiddlewave({
-    playerId,
-    adminId: cycle.adminId,
-    cycleId: cycle.id,
-    cycleCreatedAt: cycle.createdAt,
-  });
+  const syncedProgress = opts?.skipExternalSync
+    ? null
+    : await syncActiveCycleProgressFromMiddlewave({
+        playerId,
+        adminId: cycle.adminId,
+        cycleId: cycle.id,
+        cycleCreatedAt: cycle.createdAt,
+      });
 
   const cycleTargetRollover = parseFloat(cycle.targetRollover);
   const currentRollover = syncedProgress?.currentRollover ?? parseFloat(cycle.currentRollover);

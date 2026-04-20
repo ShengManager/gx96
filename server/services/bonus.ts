@@ -474,6 +474,85 @@ export async function validateBonusClaim(
   );
 }
 
+const ACTIVE_BONUS_MSG =
+  "You already have an active bonus. Complete or forfeit it before claiming another one.";
+
+/**
+ * Builds the player /bonus list. Previously used Promise.all(validateBonusClaim) per row, which
+ * could open dozens of parallel DB sessions and stall the pool (appearing as infinite loading).
+ */
+export async function enrichBonusesWithEligibility(
+  playerId: number,
+  adminId: number,
+  bonuses: Array<Record<string, unknown> & { id: number }>,
+  claimed: Array<{ bonusConfigId: number | null }>
+): Promise<
+  Array<
+    Record<string, unknown> & {
+      canClaim: boolean;
+      claimBlockedReason: string | null;
+      claimedByPlayer: typeof claimed;
+    }
+  >
+> {
+  const db = await getDb();
+  if (!db) {
+    return bonuses.map((b) => ({
+      ...b,
+      canClaim: false,
+      claimBlockedReason: "Database unavailable",
+      claimedByPlayer: claimed.filter((c) => c.bonusConfigId === b.id),
+    }));
+  }
+
+  const activeRows = await db
+    .select({ cnt: count() })
+    .from(playerBonuses)
+    .where(
+      and(
+        eq(playerBonuses.playerId, playerId),
+        eq(playerBonuses.adminId, adminId),
+        eq(playerBonuses.status, "active")
+      )
+    );
+  const activeCount = Number(activeRows[0]?.cnt || 0);
+  if (activeCount > 0) {
+    return bonuses.map((b) => ({
+      ...b,
+      canClaim: false,
+      claimBlockedReason: ACTIVE_BONUS_MSG,
+      claimedByPlayer: claimed.filter((c) => c.bonusConfigId === b.id),
+    }));
+  }
+
+  const CONCURRENCY = 5;
+  const out: Array<
+    Record<string, unknown> & {
+      canClaim: boolean;
+      claimBlockedReason: string | null;
+      claimedByPlayer: typeof claimed;
+    }
+  > = [];
+
+  for (let i = 0; i < bonuses.length; i += CONCURRENCY) {
+    const slice = bonuses.slice(i, i + CONCURRENCY);
+    const chunk = await Promise.all(
+      slice.map(async (b) => {
+        const validation = await validateBonusClaim(playerId, adminId, b.id);
+        return {
+          ...b,
+          canClaim: validation.valid,
+          claimBlockedReason: validation.valid ? null : validation.failReason || "Not eligible",
+          claimedByPlayer: claimed.filter((c) => c.bonusConfigId === b.id),
+        };
+      })
+    );
+    out.push(...chunk);
+  }
+
+  return out;
+}
+
 export function calculateBonusAmount(
   bonusType: number,
   depositAmount: number,

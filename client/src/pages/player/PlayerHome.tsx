@@ -54,23 +54,25 @@ function getDisplayGameType(game: any): string {
 }
 
 export default function PlayerHome() {
-  const { isAuthenticated, user, accessToken } = usePlayerAuth();
+  const { isAuthenticated, user, accessToken, loading: authLoading } = usePlayerAuth();
+  const canFetch = !!accessToken && !authLoading;
+
   const balanceQuery = trpc.player.balance.useQuery(
     { token: accessToken || "" },
-    { enabled: !!accessToken, refetchInterval: 30000 }
+    { enabled: canFetch, refetchInterval: 30000 }
   );
 
   const bannersQuery = trpc.player.banners.useQuery(
     { token: accessToken || "" },
-    { enabled: !!accessToken }
+    { enabled: canFetch }
   );
   const gamesQuery = trpc.player.gameList.useQuery(
     { token: accessToken || "" },
-    { enabled: !!accessToken }
+    { enabled: canFetch, retry: 2 }
   );
   const withdrawCheckQuery = trpc.player.withdrawalCheck.useQuery(
     { token: accessToken || "" },
-    { enabled: !!accessToken, refetchInterval: 30000 }
+    { enabled: canFetch, refetchInterval: 30000 }
   );
 
   const banners = (bannersQuery.data as any) || [];
@@ -252,9 +254,17 @@ export default function PlayerHome() {
           </Link>
         </div>
 
-        {gamesQuery.isLoading ? (
+        {gamesQuery.isPending ? (
           <div className="flex items-center justify-center py-12">
             <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+          </div>
+        ) : gamesQuery.isError ? (
+          <div className="text-center py-10 space-y-2">
+            <p className="text-sm text-destructive">Could not load games</p>
+            <p className="text-xs text-muted-foreground">{gamesQuery.error?.message || "Network error"}</p>
+            <Button variant="outline" size="sm" onClick={() => gamesQuery.refetch()}>
+              Retry
+            </Button>
           </div>
         ) : games.length > 0 ? (
           <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2.5">

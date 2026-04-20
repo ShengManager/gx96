@@ -4,10 +4,77 @@ import { TRPCError } from "@trpc/server";
 import { requireAdmin, checkPermission } from "../services/middleware";
 import * as db from "../db";
 import { getDb } from "../db";
-import { players, playerTags, withdrawals, playerBonuses, depositCycles, banks } from "../../drizzle/schema";
-import { eq, and, count } from "drizzle-orm";
+import { players, playerTags, withdrawals, playerBonuses, depositCycles, banks, bonusConfigs } from "../../drizzle/schema";
+import { eq, and, count, inArray } from "drizzle-orm";
 import { generateAutoLoginToken } from "../services/auth";
 import { createDeposit, approveDeposit, checkWithdrawalConditions } from "../services/depositCycle";
+import type { MiddlewaveConfig } from "../services/middlewave";
+
+/** Max wait for MW balances + logs when opening admin player detail (ProjectInfo + parallel balances + logs can exceed 15s). */
+const ADMIN_PLAYER_DETAIL_MW_MS = 65_000;
+
+type MwPlayerDetailSlice = {
+  providerBalances: Array<{ provider: string; balance: number; error?: string }>;
+  providerBalanceTotal: number;
+  providerBalanceError: string | null;
+  middlewaveGameLogs: Array<{
+    provider?: string;
+    gameCode?: string;
+    gameName?: string;
+    betAmount?: string;
+    payout?: string;
+    winLose?: string;
+    transactionDate?: string;
+    providerTranId?: string;
+  }>;
+  middlewaveGameLogError: string | null;
+};
+
+async function loadMwPlayerDetailSlice(
+  config: MiddlewaveConfig,
+  playerIdentityCandidates: string[]
+): Promise<MwPlayerDetailSlice> {
+  const { checkAllProviderBalances, queryGameLogs, getActiveProviders } = await import("../services/middlewave");
+  /** One ProjectInfo call per detail open, not per player identity candidate */
+  const providers = await getActiveProviders(config);
+
+  let providerBalances: MwPlayerDetailSlice["providerBalances"] = [];
+  let providerBalanceTotal = 0;
+  let middlewaveGameLogs: MwPlayerDetailSlice["middlewaveGameLogs"] = [];
+  let middlewaveGameLogError: string | null = null;
+
+  for (const playerId of playerIdentityCandidates) {
+    const balances = await checkAllProviderBalances(config, playerId, providers);
+    const hasAtLeastOneSuccess = balances.some((b) => !b.error);
+    providerBalances = balances;
+    providerBalanceTotal = balances.reduce((sum, b) => sum + (b.balance || 0), 0);
+    try {
+      const logsRes = await queryGameLogs(config, { playerId, page: 1, pageSize: 50 });
+      if (logsRes.success) {
+        middlewaveGameLogs = Array.isArray(logsRes.logs) ? logsRes.logs : [];
+        middlewaveGameLogError = null;
+      } else {
+        middlewaveGameLogError = logsRes.error || logsRes.message || "Failed to load Middlewave game logs";
+      }
+    } catch (err: any) {
+      middlewaveGameLogError = err?.message || "Failed to load Middlewave game logs";
+    }
+    if (hasAtLeastOneSuccess) break;
+  }
+
+  let providerBalanceError: string | null = null;
+  if (providerBalances.length === 0) {
+    providerBalanceError = "Unable to load provider balances";
+  }
+
+  return {
+    providerBalances,
+    providerBalanceTotal,
+    providerBalanceError,
+    middlewaveGameLogs,
+    middlewaveGameLogError,
+  };
+}
 
 function calcWalletBalance(cycle: any): number {
   if (!cycle) return 0;
@@ -152,10 +219,11 @@ export const adminPlayersRouter = router({
         db.getActiveCycle(input.playerId),
         db.getDepositBanks(admin.adminId!),
         db.getWithdrawBanks(admin.adminId!),
-        checkWithdrawalConditions(input.playerId),
+        // Avoid duplicating slow Middlewave work: this handler loads MW balances/logs below.
+        checkWithdrawalConditions(input.playerId, { skipExternalSync: true, skipProviderProbe: true }),
         db.getTelegramBotsByAdmin(admin.adminId!),
       ]);
-      const { getMiddlewaveConfig, checkAllProviderBalances, queryGameLogs } = await import("../services/middlewave");
+      const { getMiddlewaveConfig } = await import("../services/middlewave");
       const config = await getMiddlewaveConfig(admin.adminId!);
       const localWalletBalance = calcWalletBalance(activeCycle);
 
@@ -180,31 +248,32 @@ export const adminPlayersRouter = router({
       let middlewaveGameLogError: string | null = null;
 
       if (config) {
-        for (const playerId of playerIdentityCandidates) {
-          const balances = await checkAllProviderBalances(config, playerId);
-          const hasAtLeastOneSuccess = balances.some((b) => !b.error);
-          providerBalances = balances;
-          providerBalanceTotal = balances.reduce((sum, b) => sum + (b.balance || 0), 0);
-          try {
-            const logsRes = await queryGameLogs(config, { playerId, page: 1, pageSize: 50 });
-            if (logsRes.success) {
-              middlewaveGameLogs = Array.isArray(logsRes.logs) ? logsRes.logs : [];
-              middlewaveGameLogError = null;
-            } else {
-              middlewaveGameLogError = logsRes.error || logsRes.message || "Failed to load Middlewave game logs";
-            }
-          } catch (err: any) {
-            middlewaveGameLogError = err?.message || "Failed to load Middlewave game logs";
-          }
-          if (hasAtLeastOneSuccess) break;
+        try {
+          const slice = await Promise.race([
+            loadMwPlayerDetailSlice(config, playerIdentityCandidates),
+            new Promise<never>((_, rej) => {
+              setTimeout(() => rej(new Error("MW_DETAIL_TIMEOUT")), ADMIN_PLAYER_DETAIL_MW_MS);
+            }),
+          ]);
+          providerBalances = slice.providerBalances;
+          providerBalanceTotal = slice.providerBalanceTotal;
+          providerBalanceError = slice.providerBalanceError;
+          middlewaveGameLogs = slice.middlewaveGameLogs;
+          middlewaveGameLogError = slice.middlewaveGameLogError;
+        } catch (e: any) {
+          const timedOut = String(e?.message || "").includes("MW_DETAIL_TIMEOUT");
+          providerBalanceError = timedOut
+            ? "Middlewave did not respond in time — check Admin → Settings (Middlewave Base URL & Project Token) and game API connectivity. Local wallet data below is still shown."
+            : e?.message || "Middlewave error";
+          middlewaveGameLogError = providerBalanceError;
         }
       } else {
         providerBalanceError = "Middlewave not configured";
         middlewaveGameLogError = "Middlewave not configured";
       }
 
-      if (config && providerBalances.length === 0) {
-        providerBalanceError = "Unable to load provider balances";
+      if (config && providerBalances.length === 0 && !providerBalanceError?.includes("did not respond")) {
+        providerBalanceError = providerBalanceError || "Unable to load provider balances";
       }
       const withdrawableMax = withdrawableCeiling(localWalletBalance, providerBalanceTotal);
 
@@ -337,10 +406,27 @@ export const adminPlayersRouter = router({
       };
 
       if (includeTimelineMarkers) {
-        const [allDeposits, allWithdrawals] = await Promise.all([
+        const [allDeposits, allWithdrawals, allPlayerBonuses] = await Promise.all([
           db.getDepositsByPlayer(player.id),
           db.getWithdrawalsByPlayer(player.id),
+          db.getPlayerBonuses(player.id),
         ]);
+
+        const database = await getDb();
+        let bonusNameById = new Map<number, string>();
+        if (database && allPlayerBonuses.length > 0) {
+          const configIds = Array.from(new Set(allPlayerBonuses.map((b) => b.bonusConfigId)));
+          const nameRows = await database
+            .select({ id: bonusConfigs.id, name: bonusConfigs.name })
+            .from(bonusConfigs)
+            .where(and(eq(bonusConfigs.adminId, admin.adminId!), inArray(bonusConfigs.id, configIds)));
+          bonusNameById = new Map(nameRows.map((r) => [r.id, r.name || ""]));
+        }
+
+        let scopedBonuses = allPlayerBonuses;
+        if (input.scope === "current_cycle" && scopedCycle) {
+          scopedBonuses = allPlayerBonuses.filter((b) => b.cycleId === scopedCycle.id);
+        }
 
         if (input.scope === "current_cycle" && scopedCycle) {
           timelineEvents.push({
@@ -377,6 +463,19 @@ export const adminPlayersRouter = router({
                 eventRef: `Order #${w.id}`,
               });
             });
+          scopedBonuses.forEach((b) => {
+            const nm = bonusNameById.get(b.bonusConfigId) || "";
+            timelineEvents.push({
+              entryType: "bonus",
+              transactionDate: b.claimedAt,
+              eventAmount: b.awardedAmount,
+              gameName: "BONUS",
+              provider: "-",
+              providerTranId: `player-bonus-${b.id}`,
+              eventRef: `Bonus #${b.bonusConfigId}${nm ? ` · ${nm}` : ""} · claim #${b.id}`,
+              bonusStatus: b.status,
+            });
+          });
         } else if (input.scope === "all") {
           allDeposits
             .filter((d: any) => d.status === "approved")
@@ -417,6 +516,19 @@ export const adminPlayersRouter = router({
                 eventRef: `Order #${w.id}`,
               });
             });
+          scopedBonuses.forEach((b) => {
+            const nm = bonusNameById.get(b.bonusConfigId) || "";
+            timelineEvents.push({
+              entryType: "bonus",
+              transactionDate: b.claimedAt,
+              eventAmount: b.awardedAmount,
+              gameName: "BONUS",
+              provider: "-",
+              providerTranId: `player-bonus-${b.id}`,
+              eventRef: `Bonus #${b.bonusConfigId}${nm ? ` · ${nm}` : ""} · claim #${b.id}`,
+              bonusStatus: b.status,
+            });
+          });
         }
       }
 
@@ -428,7 +540,7 @@ export const adminPlayersRouter = router({
         const markerAmount = Math.max(0, parseFloat(String(row.eventAmount || "0")) || 0);
         const winLose = parseFloat(String(row.winLose || "0")) || 0;
         let delta = 0;
-        if (entryType === "deposit") delta = markerAmount;
+        if (entryType === "deposit" || entryType === "bonus") delta = markerAmount;
         else if (entryType === "withdraw" || entryType === "forfeited") delta = -markerAmount;
         else delta = winLose;
         runningBalance += delta;

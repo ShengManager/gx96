@@ -5,7 +5,7 @@ import { requireAdmin, checkPermission } from "../services/middleware";
 import * as db from "../db";
 import { getDb } from "../db";
 import {
-  bonusConfigs, banners, telegramBots, telegramBotMessages,
+  bonusConfigs, bonusPromoGroups, banners, telegramBots, telegramBotMessages,
   countryConfigs, adminAccounts, subAccountPermissions, adminLogs,
 } from "../../drizzle/schema";
 import { eq, and, desc, gte, lte, sql } from "drizzle-orm";
@@ -46,6 +46,72 @@ export const adminBonusRouter = router({
       return db.getBonusesByAdmin(admin.adminId!);
     }),
 
+  /** 前台分组主数据（标题、横幅、排序）；与活动通过 groupKey 关联 */
+  listPromoGroups: publicProcedure
+    .input(z.object({ token: z.string() }))
+    .query(async ({ input, ctx }) => {
+      const admin = requireAdmin(ctx);
+      await checkPermission(admin.id, admin.role!, "bonus", "view");
+      return db.getBonusPromoGroupsByAdmin(admin.adminId!);
+    }),
+
+  createPromoGroup: publicProcedure
+    .input(
+      z.object({
+        token: z.string(),
+        groupKey: z.string().min(1).max(128),
+        title: z.string().max(256).optional().nullable(),
+        bannerUrl: z.string().optional().nullable(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const admin = requireAdmin(ctx);
+      await checkPermission(admin.id, admin.role!, "bonus", "edit");
+      try {
+        const r = await db.createBonusPromoGroup(admin.adminId!, {
+          groupKey: input.groupKey,
+          title: input.title,
+          bannerUrl: input.bannerUrl,
+        });
+        await db.createAdminLog({
+          adminId: admin.id,
+          action: "create_promo_group",
+          module: "bonus",
+          targetType: "promo_group",
+          details: { groupKey: input.groupKey.trim().slice(0, 128) },
+        });
+        return { success: true as const, id: r.id };
+      } catch (e: any) {
+        const msg = String(e?.message ?? e ?? "");
+        if (e?.code === "ER_DUP_ENTRY" || msg.includes("Duplicate") || msg.includes("duplicate")) {
+          throw new TRPCError({ code: "CONFLICT", message: "This group key already exists" });
+        }
+        throw e;
+      }
+    }),
+
+  deletePromoGroup: publicProcedure
+    .input(z.object({ token: z.string(), groupKey: z.string().min(1).max(128) }))
+    .mutation(async ({ input, ctx }) => {
+      const admin = requireAdmin(ctx);
+      await checkPermission(admin.id, admin.role!, "bonus", "edit");
+      const res = await db.deleteBonusPromoGroupIfEmpty(admin.adminId!, input.groupKey);
+      if (!res.ok && res.reason === "has_bonuses") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Move or delete promotions in this group before deleting it" });
+      }
+      if (!res.ok) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Could not delete promo group" });
+      }
+      await db.createAdminLog({
+        adminId: admin.id,
+        action: "delete_promo_group",
+        module: "bonus",
+        targetType: "promo_group",
+        details: { groupKey: input.groupKey.trim().slice(0, 128) },
+      });
+      return { success: true as const };
+    }),
+
   create: publicProcedure
     .input(z.object({
       token: z.string(),
@@ -63,6 +129,8 @@ export const adminBonusRouter = router({
       turnoverTarget: z.number().optional(),
       maxWithdraw: z.number().optional(),
       sortOrder: z.number().default(0),
+      promoGroupKey: z.string().max(128).optional(),
+      promoGroupSort: z.number().default(0),
     }))
     .mutation(async ({ input, ctx }) => {
       const admin = requireAdmin(ctx);
@@ -70,6 +138,8 @@ export const adminBonusRouter = router({
 
       const database = await getDb();
       if (!database) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+      const pk = (input.promoGroupKey ?? "").trim().slice(0, 128);
 
       const result = await database.insert(bonusConfigs).values({
         adminId: admin.adminId!,
@@ -87,8 +157,14 @@ export const adminBonusRouter = router({
         turnoverTarget: input.turnoverTarget?.toFixed(4) || null,
         maxWithdraw: input.maxWithdraw?.toFixed(4) || null,
         sortOrder: input.sortOrder,
+        promoGroupKey: pk,
+        promoGroupTitle: null,
+        promoGroupBannerUrl: null,
+        promoGroupSort: input.promoGroupSort ?? 0,
         isActive: true,
       });
+
+      if (pk) await db.ensureBonusPromoGroupRow(admin.adminId!, pk);
 
       await db.createAdminLog({ adminId: admin.id, action: "create_bonus", module: "bonus", targetId: result[0].insertId, targetType: "bonus_config" });
       return { success: true, bonusId: result[0].insertId };
@@ -113,6 +189,8 @@ export const adminBonusRouter = router({
       maxWithdraw: z.number().optional(),
       isActive: z.boolean().optional(),
       sortOrder: z.number().optional(),
+      promoGroupKey: z.string().max(128).optional(),
+      promoGroupSort: z.number().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       const admin = requireAdmin(ctx);
@@ -137,11 +215,141 @@ export const adminBonusRouter = router({
       if (input.maxWithdraw !== undefined) updateData.maxWithdraw = input.maxWithdraw.toFixed(4);
       if (input.isActive !== undefined) updateData.isActive = input.isActive;
       if (input.sortOrder !== undefined) updateData.sortOrder = input.sortOrder;
+      if (input.promoGroupKey !== undefined) updateData.promoGroupKey = input.promoGroupKey.trim().slice(0, 128);
+      if (input.promoGroupSort !== undefined) updateData.promoGroupSort = input.promoGroupSort;
       updateData.ruleVersion = sql`${bonusConfigs.ruleVersion} + 1`;
 
       await database.update(bonusConfigs).set(updateData).where(and(eq(bonusConfigs.id, input.bonusId), eq(bonusConfigs.adminId, admin.adminId!)));
+
+      if (input.promoGroupKey !== undefined) {
+        const pk = input.promoGroupKey.trim().slice(0, 128);
+        if (pk) await db.ensureBonusPromoGroupRow(admin.adminId!, pk);
+      }
       await db.createAdminLog({ adminId: admin.id, action: "update_bonus", module: "bonus", targetId: input.bonusId, targetType: "bonus_config" });
       return { success: true };
+    }),
+
+  /** 更新前台分组展示信息（写入 bonus_promo_groups，不再写每条活动） */
+  updatePromoGroup: publicProcedure
+    .input(z.object({
+      token: z.string(),
+      promoGroupKey: z.string().min(1).max(128),
+      promoGroupTitle: z.string().max(256).optional().nullable(),
+      promoGroupBannerUrl: z.string().optional().nullable(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const admin = requireAdmin(ctx);
+      await checkPermission(admin.id, admin.role!, "bonus", "edit");
+
+      const key = input.promoGroupKey.trim().slice(0, 128);
+      const hasChange =
+        input.promoGroupTitle !== undefined ||
+        input.promoGroupBannerUrl !== undefined;
+      if (!hasChange) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "No fields to update" });
+      }
+
+      await db.upsertBonusPromoGroupDisplay(admin.adminId!, key, {
+        title: input.promoGroupTitle,
+        bannerUrl: input.promoGroupBannerUrl,
+      });
+
+      await db.createAdminLog({
+        adminId: admin.id,
+        action: "update_promo_group",
+        module: "bonus",
+        targetType: "promo_group",
+        details: { promoGroupKey: key },
+      });
+      return { success: true as const };
+    }),
+
+  /**
+   * 拖拽后的完整布局：分组顺序 + 每组内奖金顺序。会写入 promoGroupSort、sortOrder、promoGroupKey。
+   * groups[].key 使用 "__ungrouped__" 表示未分组（存库为空字符串）。
+   */
+  applyBonusLayout: publicProcedure
+    .input(
+      z.object({
+        token: z.string(),
+        groups: z.array(
+          z.object({
+            key: z.string().max(128),
+            bonusIds: z.array(z.number().int().positive()),
+          })
+        ),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const admin = requireAdmin(ctx);
+      await checkPermission(admin.id, admin.role!, "bonus", "edit");
+
+      const database = await getDb();
+      if (!database) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+      const adminId = admin.adminId!;
+      const flat = input.groups.flatMap((g) => g.bonusIds);
+      if (flat.length !== new Set(flat).size) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Duplicate bonus id in layout" });
+      }
+
+      const existing = await database
+        .select({ id: bonusConfigs.id })
+        .from(bonusConfigs)
+        .where(eq(bonusConfigs.adminId, adminId));
+      const allIds = new Set(existing.map((r) => r.id));
+      if (flat.length !== allIds.size) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Layout must list every bonus exactly once",
+        });
+      }
+      for (const id of flat) {
+        if (!allIds.has(id)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: `Invalid bonus id: ${id}` });
+        }
+      }
+
+      await database.transaction(async (tx) => {
+        for (let gi = 0; gi < input.groups.length; gi++) {
+          const g = input.groups[gi];
+          const pk = g.key === "__ungrouped__" ? "" : g.key.trim().slice(0, 128);
+          for (let bi = 0; bi < g.bonusIds.length; bi++) {
+            const id = g.bonusIds[bi];
+            await tx
+              .update(bonusConfigs)
+              .set({
+                promoGroupKey: pk,
+                promoGroupSort: gi,
+                sortOrder: bi,
+                ruleVersion: sql`${bonusConfigs.ruleVersion} + 1`,
+              })
+              .where(and(eq(bonusConfigs.id, id), eq(bonusConfigs.adminId, adminId)));
+          }
+          if (pk) {
+            await tx
+              .insert(bonusPromoGroups)
+              .values({
+                adminId,
+                groupKey: pk,
+                title: null,
+                bannerUrl: null,
+                sortIndex: gi,
+              })
+              .onDuplicateKeyUpdate({
+                set: { sortIndex: gi },
+              });
+          }
+        }
+      });
+
+      await db.createAdminLog({
+        adminId: admin.id,
+        action: "apply_bonus_layout",
+        module: "bonus",
+        details: { groupCount: input.groups.length },
+      });
+      return { success: true as const };
     }),
 
   delete: publicProcedure
@@ -677,6 +885,16 @@ export const adminFrontendRouter = router({
       customCss: z.string().optional(),
       customHeadHtml: z.string().optional(),
       customBodyJs: z.string().optional(),
+      layoutInjections: z.record(
+        z.string(),
+        z.object({
+          css: z.string().optional(),
+          headHtml: z.string().optional(),
+          bodyHtml: z.string().optional(),
+          bodyJs: z.string().optional(),
+          dataJson: z.string().optional(),
+        })
+      ).optional(),
       primaryColor: z.string().optional(),
       logoUrl: z.string().optional(),
       faviconUrl: z.string().optional(),

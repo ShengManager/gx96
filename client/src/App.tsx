@@ -16,8 +16,10 @@ import AdminWithdrawals from "./pages/admin/AdminWithdrawals";
 import AdminBonuses from "./pages/admin/AdminBonuses";
 import AdminBanks from "./pages/admin/AdminBanks";
 import AdminBanners from "./pages/admin/AdminBanners";
+import AdminMedia from "./pages/admin/AdminMedia";
 import AdminReports from "./pages/admin/AdminReports";
 import AdminSettings from "./pages/admin/AdminSettings";
+import AdminLayouts from "./pages/admin/AdminLayouts";
 import AdminLogs from "./pages/admin/AdminLogs";
 import AdminSetupGuide from "./pages/admin/AdminSetupGuide";
 import AdminLayout from "./pages/admin/AdminLayout";
@@ -68,8 +70,10 @@ function Router() {
       <Route path="/admin/bonuses">{() => <AdminProtected><AdminBonuses /></AdminProtected>}</Route>
       <Route path="/admin/banks">{() => <AdminProtected><AdminBanks /></AdminProtected>}</Route>
       <Route path="/admin/banners">{() => <AdminProtected><AdminBanners /></AdminProtected>}</Route>
+      <Route path="/admin/media">{() => <AdminProtected><AdminMedia /></AdminProtected>}</Route>
       <Route path="/admin/reports">{() => <AdminProtected><AdminReports /></AdminProtected>}</Route>
       <Route path="/admin/settings">{() => <AdminProtected><AdminSettings /></AdminProtected>}</Route>
+      <Route path="/admin/layouts">{() => <AdminProtected><AdminLayouts /></AdminProtected>}</Route>
       <Route path="/admin/logs">{() => <AdminProtected><AdminLogs /></AdminProtected>}</Route>
       <Route path="/admin/setup-guide">{() => <AdminProtected><AdminSetupGuide /></AdminProtected>}</Route>
 

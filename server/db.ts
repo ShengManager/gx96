@@ -15,6 +15,7 @@ import {
   deposits, Deposit,
   withdrawals, Withdrawal,
   bonusConfigs, BonusConfig,
+  bonusPromoGroups,
   playerBonuses, PlayerBonus,
   gameLogsCache,
   adminLogs,
@@ -28,6 +29,7 @@ import {
 } from "../drizzle/schema";
 
 import { ENV } from './_core/env';
+import { withdrawalEntryKind } from "./services/withdrawalKind";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -232,6 +234,32 @@ export async function getDepositsByAdmin(adminId: number, opts?: { status?: stri
   return { deposits: rows, total: countRows[0]?.cnt || 0 };
 }
 
+/** Deposits still needing staff action: pending (Handle) or processing (Approve/Reject) */
+export async function countDepositsPendingAction(adminId: number): Promise<number> {
+  const database = await getDb();
+  if (!database) return 0;
+  const [row] = await database
+    .select({ cnt: count() })
+    .from(deposits)
+    .where(
+      and(eq(deposits.adminId, adminId), inArray(deposits.status, ["pending", "processing"]))
+    );
+  return Number(row?.cnt ?? 0);
+}
+
+/** Withdrawals still needing staff action: pending (Handle) or processing (Approve/Reject) */
+export async function countWithdrawalsPendingAction(adminId: number): Promise<number> {
+  const database = await getDb();
+  if (!database) return 0;
+  const [row] = await database
+    .select({ cnt: count() })
+    .from(withdrawals)
+    .where(
+      and(eq(withdrawals.adminId, adminId), inArray(withdrawals.status, ["pending", "processing"]))
+    );
+  return Number(row?.cnt ?? 0);
+}
+
 export async function getDepositsByPlayer(playerId: number) {
   const db = await getDb();
   if (!db) return [];
@@ -239,22 +267,43 @@ export async function getDepositsByPlayer(playerId: number) {
 }
 
 // ─── Withdrawals ───
-export async function getWithdrawalsByAdmin(adminId: number, opts?: { status?: string; page?: number; pageSize?: number }) {
+export async function getWithdrawalsByAdmin(
+  adminId: number,
+  opts?: {
+    status?: string;
+    page?: number;
+    pageSize?: number;
+    /** default: only player + manual payouts (excludes bonus-forfeit rows) */
+    listKind?: "all" | "withdrawals" | "forfeits";
+  }
+) {
   const db = await getDb();
   if (!db) return { withdrawals: [], total: 0 };
   const page = opts?.page || 1;
   const pageSize = opts?.pageSize || 20;
   const offset = (page - 1) * pageSize;
 
+  const listKind = opts?.listKind ?? "withdrawals";
+
   let conditions: any[] = [eq(withdrawals.adminId, adminId)];
   if (opts?.status) conditions.push(eq(withdrawals.status, opts.status as any));
+  if (listKind === "forfeits") {
+    conditions.push(sql`LOWER(COALESCE(${withdrawals.handleNote}, '')) LIKE '%forfeit%'`);
+  } else if (listKind === "withdrawals") {
+    conditions.push(sql`NOT (LOWER(COALESCE(${withdrawals.handleNote}, '')) LIKE '%forfeit%')`);
+  }
 
   const [rows, countRows] = await Promise.all([
     db.select().from(withdrawals).where(and(...conditions)).orderBy(desc(withdrawals.createdAt)).limit(pageSize).offset(offset),
     db.select({ cnt: count() }).from(withdrawals).where(and(...conditions)),
   ]);
 
-  return { withdrawals: rows, total: countRows[0]?.cnt || 0 };
+  const rowsWithKind = rows.map((row) => ({
+    ...row,
+    entryKind: withdrawalEntryKind(row.handleNote),
+  }));
+
+  return { withdrawals: rowsWithKind, total: countRows[0]?.cnt || 0 };
 }
 
 export async function getWithdrawalsByPlayer(playerId: number) {
@@ -264,16 +313,164 @@ export async function getWithdrawalsByPlayer(playerId: number) {
 }
 
 // ─── Bonus Configs ───
+
+export type BonusPromoGroupRow = typeof bonusPromoGroups.$inferSelect;
+
+export async function getBonusPromoGroupsByAdmin(adminId: number): Promise<BonusPromoGroupRow[]> {
+  const database = await getDb();
+  if (!database) return [];
+  return database
+    .select()
+    .from(bonusPromoGroups)
+    .where(eq(bonusPromoGroups.adminId, adminId))
+    .orderBy(asc(bonusPromoGroups.sortIndex), asc(bonusPromoGroups.groupKey));
+}
+
+/** 将独立分组表中的标题/横幅合并到列表（优先于 bonus_configs 上遗留字段） */
+export function mergePromoGroupDisplayIntoBonuses<
+  T extends { promoGroupKey?: string | null; promoGroupTitle?: string | null; promoGroupBannerUrl?: string | null },
+>(bonuses: T[], groups: { groupKey: string; title: string | null; bannerUrl: string | null }[]): T[] {
+  const gmap = new Map(groups.map((g) => [g.groupKey.trim(), g]));
+  return bonuses.map((b) => {
+    const k = String(b.promoGroupKey ?? "").trim();
+    if (!k) return b;
+    const g = gmap.get(k);
+    if (!g) return b;
+    return {
+      ...b,
+      promoGroupTitle: g.title ?? b.promoGroupTitle ?? null,
+      promoGroupBannerUrl: g.bannerUrl ?? b.promoGroupBannerUrl ?? null,
+    };
+  });
+}
+
 export async function getBonusesByAdmin(adminId: number) {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(bonusConfigs).where(eq(bonusConfigs.adminId, adminId)).orderBy(asc(bonusConfigs.sortOrder));
+  const database = await getDb();
+  if (!database) return [];
+  const bonuses = await database
+    .select()
+    .from(bonusConfigs)
+    .where(eq(bonusConfigs.adminId, adminId))
+    .orderBy(asc(bonusConfigs.promoGroupSort), asc(bonusConfigs.sortOrder));
+  const metaRows = await getBonusPromoGroupsByAdmin(adminId);
+  const meta = metaRows.map((g) => ({ groupKey: g.groupKey, title: g.title, bannerUrl: g.bannerUrl }));
+  return mergePromoGroupDisplayIntoBonuses(bonuses, meta);
 }
 
 export async function getActiveBonusesByAdmin(adminId: number) {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(bonusConfigs).where(and(eq(bonusConfigs.adminId, adminId), eq(bonusConfigs.isActive, true))).orderBy(asc(bonusConfigs.sortOrder));
+  const database = await getDb();
+  if (!database) return [];
+  const bonuses = await database
+    .select()
+    .from(bonusConfigs)
+    .where(and(eq(bonusConfigs.adminId, adminId), eq(bonusConfigs.isActive, true)))
+    .orderBy(asc(bonusConfigs.promoGroupSort), asc(bonusConfigs.sortOrder));
+  const metaRows = await getBonusPromoGroupsByAdmin(adminId);
+  const meta = metaRows.map((g) => ({ groupKey: g.groupKey, title: g.title, bannerUrl: g.bannerUrl }));
+  return mergePromoGroupDisplayIntoBonuses(bonuses, meta);
+}
+
+export async function createBonusPromoGroup(
+  adminId: number,
+  input: { groupKey: string; title?: string | null; bannerUrl?: string | null }
+): Promise<{ id: number }> {
+  const database = await getDb();
+  if (!database) throw new Error("Database unavailable");
+  const key = input.groupKey.trim().slice(0, 128);
+  if (!key) throw new Error("Empty group key");
+
+  const [maxRow] = await database
+    .select({ m: sql<number>`COALESCE(MAX(${bonusPromoGroups.sortIndex}), -1)` })
+    .from(bonusPromoGroups)
+    .where(eq(bonusPromoGroups.adminId, adminId));
+  const nextSort = Number(maxRow?.m ?? -1) + 1;
+
+  const result = await database.insert(bonusPromoGroups).values({
+    adminId,
+    groupKey: key,
+    title: input.title?.trim().slice(0, 256) || null,
+    bannerUrl: input.bannerUrl?.trim() || null,
+    sortIndex: nextSort,
+  });
+  const insertId = (result as unknown as { insertId: number }[])[0]?.insertId;
+  return { id: Number(insertId ?? 0) };
+}
+
+/** 更新或插入分组展示字段（标题、横幅）；无表行时会插入一行 */
+export async function upsertBonusPromoGroupDisplay(
+  adminId: number,
+  groupKey: string,
+  fields: { title?: string | null; bannerUrl?: string | null }
+): Promise<void> {
+  const database = await getDb();
+  if (!database) throw new Error("Database unavailable");
+  const key = groupKey.trim().slice(0, 128);
+  if (!key) throw new Error("Empty group key");
+
+  const [maxRow] = await database
+    .select({ m: sql<number>`COALESCE(MAX(${bonusPromoGroups.sortIndex}), -1)` })
+    .from(bonusPromoGroups)
+    .where(eq(bonusPromoGroups.adminId, adminId));
+  const nextSort = Number(maxRow?.m ?? -1) + 1;
+
+  const title = fields.title !== undefined ? (fields.title ? String(fields.title).trim().slice(0, 256) : null) : undefined;
+  const bannerUrl = fields.bannerUrl !== undefined ? (fields.bannerUrl?.trim() || null) : undefined;
+
+  await database
+    .insert(bonusPromoGroups)
+    .values({
+      adminId,
+      groupKey: key,
+      title: title ?? null,
+      bannerUrl: bannerUrl ?? null,
+      sortIndex: nextSort,
+    })
+    .onDuplicateKeyUpdate({
+      set: {
+        ...(title !== undefined ? { title } : {}),
+        ...(bannerUrl !== undefined ? { bannerUrl } : {}),
+      },
+    });
+}
+
+export async function deleteBonusPromoGroupIfEmpty(adminId: number, groupKey: string): Promise<{ ok: boolean; reason?: string }> {
+  const database = await getDb();
+  if (!database) return { ok: false, reason: "db" };
+  const key = groupKey.trim().slice(0, 128);
+  if (!key) return { ok: false, reason: "empty_key" };
+  const [cntRow] = await database
+    .select({ c: count() })
+    .from(bonusConfigs)
+    .where(and(eq(bonusConfigs.adminId, adminId), eq(bonusConfigs.promoGroupKey, key)));
+  if (Number(cntRow?.c ?? 0) > 0) return { ok: false, reason: "has_bonuses" };
+  await database.delete(bonusPromoGroups).where(and(eq(bonusPromoGroups.adminId, adminId), eq(bonusPromoGroups.groupKey, key)));
+  return { ok: true };
+}
+
+/** 保存活动时若填写了分组 Key，确保分组表存在一行（便于空壳分组与前台合并） */
+export async function ensureBonusPromoGroupRow(adminId: number, rawKey: string): Promise<void> {
+  const database = await getDb();
+  if (!database) return;
+  const k = rawKey.trim().slice(0, 128);
+  if (!k) return;
+  const [existing] = await database
+    .select({ id: bonusPromoGroups.id })
+    .from(bonusPromoGroups)
+    .where(and(eq(bonusPromoGroups.adminId, adminId), eq(bonusPromoGroups.groupKey, k)))
+    .limit(1);
+  if (existing) return;
+  const [maxRow] = await database
+    .select({ m: sql<number>`COALESCE(MAX(${bonusPromoGroups.sortIndex}), -1)` })
+    .from(bonusPromoGroups)
+    .where(eq(bonusPromoGroups.adminId, adminId));
+  const nextSort = Number(maxRow?.m ?? -1) + 1;
+  await database.insert(bonusPromoGroups).values({
+    adminId,
+    groupKey: k,
+    title: null,
+    bannerUrl: null,
+    sortIndex: nextSort,
+  });
 }
 
 // ─── Player Bonuses ───
@@ -514,7 +711,36 @@ export async function getFrontendSettings(adminId: number) {
   const db = await getDb();
   if (!db) return null;
   const rows = await db.select().from(frontendSettings).where(eq(frontendSettings.adminId, adminId)).limit(1);
-  return rows.length > 0 ? rows[0] : null;
+  if (rows.length === 0) return null;
+  const row: any = rows[0];
+  if (typeof row.layoutInjections === "string") {
+    try {
+      row.layoutInjections = JSON.parse(row.layoutInjections);
+    } catch {
+      row.layoutInjections = {};
+    }
+  } else if (!row.layoutInjections || typeof row.layoutInjections !== "object") {
+    row.layoutInjections = {};
+  }
+  return row;
+}
+
+export async function getAnyFrontendSettings() {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db.select().from(frontendSettings).limit(1);
+  if (rows.length === 0) return null;
+  const row: any = rows[0];
+  if (typeof row.layoutInjections === "string") {
+    try {
+      row.layoutInjections = JSON.parse(row.layoutInjections);
+    } catch {
+      row.layoutInjections = {};
+    }
+  } else if (!row.layoutInjections || typeof row.layoutInjections !== "object") {
+    row.layoutInjections = {};
+  }
+  return row;
 }
 
 export async function upsertFrontendSettings(adminId: number, data: {
@@ -522,6 +748,7 @@ export async function upsertFrontendSettings(adminId: number, data: {
   customCss?: string | null;
   customHeadHtml?: string | null;
   customBodyJs?: string | null;
+  layoutInjections?: Record<string, { css?: string; headHtml?: string; bodyHtml?: string; bodyJs?: string }> | null;
   primaryColor?: string | null;
   logoUrl?: string | null;
   faviconUrl?: string | null;
@@ -545,6 +772,7 @@ export async function upsertFrontendSettings(adminId: number, data: {
       customCss: data.customCss || null,
       customHeadHtml: data.customHeadHtml || null,
       customBodyJs: data.customBodyJs || null,
+      layoutInjections: data.layoutInjections || null,
       primaryColor: data.primaryColor || null,
       logoUrl: data.logoUrl || null,
       faviconUrl: data.faviconUrl || null,

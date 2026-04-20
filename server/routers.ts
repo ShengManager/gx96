@@ -19,6 +19,7 @@ import {
   adminDomainAclRouter,
 } from "./routers/adminBusiness";
 import { topAdminRouter } from "./routers/topAdmin";
+import { adminMediaRouter } from "./routers/adminMedia";
 
 // Player router
 import { playerApiRouter } from "./routers/playerApi";
@@ -49,6 +50,7 @@ export const appRouter = router({
   adminLogs: adminLogsRouter,
   adminFrontend: adminFrontendRouter,
   adminDomainAcl: adminDomainAclRouter,
+  adminMedia: adminMediaRouter,
   topAdmin: topAdminRouter,
 
   // ─── Player APIs ───

@@ -21,6 +21,28 @@ import { deposits, withdrawals, banks, depositPresets } from "../../drizzle/sche
 import { eq, and } from "drizzle-orm";
 
 export const adminFinanceRouter = router({
+  /** Sidebar badges: counts of deposits/withdrawals awaiting handle or approve/reject */
+  pendingActionCounts: publicProcedure
+    .input(z.object({ token: z.string() }))
+    .query(async ({ ctx }) => {
+      const admin = requireAdmin(ctx);
+      let deposits = 0;
+      let withdrawals = 0;
+      try {
+        await checkPermission(admin.id, admin.role!, "deposit", "view");
+        deposits = await db.countDepositsPendingAction(admin.adminId!);
+      } catch {
+        deposits = 0;
+      }
+      try {
+        await checkPermission(admin.id, admin.role!, "withdraw", "view");
+        withdrawals = await db.countWithdrawalsPendingAction(admin.adminId!);
+      } catch {
+        withdrawals = 0;
+      }
+      return { deposits, withdrawals };
+    }),
+
   // ─── Deposits ───
   deposits: router({
     list: publicProcedure
@@ -87,11 +109,24 @@ export const adminFinanceRouter = router({
   // ─── Withdrawals ───
   withdrawals: router({
     list: publicProcedure
-      .input(z.object({ token: z.string(), status: z.string().optional(), page: z.number().default(1), pageSize: z.number().default(20) }))
+      .input(
+        z.object({
+          token: z.string(),
+          status: z.string().optional(),
+          page: z.number().default(1),
+          pageSize: z.number().default(20),
+          listKind: z.enum(["withdrawals", "forfeits", "all"]).optional().default("withdrawals"),
+        })
+      )
       .query(async ({ input, ctx }) => {
         const admin = requireAdmin(ctx);
         await checkPermission(admin.id, admin.role!, "withdraw", "view");
-        return db.getWithdrawalsByAdmin(admin.adminId!, { status: input.status, page: input.page, pageSize: input.pageSize });
+        return db.getWithdrawalsByAdmin(admin.adminId!, {
+          status: input.status,
+          page: input.page,
+          pageSize: input.pageSize,
+          listKind: input.listKind,
+        });
       }),
 
     handle: publicProcedure
