@@ -283,6 +283,40 @@ async function sendAndTrack(
   return msg;
 }
 
+async function upsertCallbackView(
+  bot: TelegramBot,
+  query: TelegramBot.CallbackQuery,
+  chatId: number,
+  text: string,
+  options?: any
+): Promise<void> {
+  const messageId = query.message?.message_id;
+  if (messageId) {
+    try {
+      await bot.editMessageText(text, {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: "HTML",
+        ...options,
+      } as any);
+      return;
+    } catch (err: any) {
+      const msg = String(err?.message || "");
+      // Fallback to sending a new message only when edit is not possible.
+      if (
+        msg.includes("message is not modified") ||
+        msg.includes("message can't be edited") ||
+        msg.includes("message to edit not found")
+      ) {
+        // Continue to fallback below.
+      } else {
+        throw err;
+      }
+    }
+  }
+  await sendAndTrack(bot, chatId, text, options);
+}
+
 function buildLoginUrlFromBase(base: string, token: string): string {
   const raw = String(base || "").trim();
   if (!raw) return "";
@@ -847,7 +881,7 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
           keyboard.push([{ text: continueText, callback_data: "games_open_frontend" }]);
         }
         keyboard.push([{ text: "⬅️ Back", callback_data: "main_menu" }]);
-        await sendAndTrack(bot, chatId, `${customTitle}\n\n${customDesc}`, {
+        await upsertCallbackView(bot, query, chatId, `${customTitle}\n\n${customDesc}`, {
           reply_markup: { inline_keyboard: keyboard },
         });
         return;
@@ -865,7 +899,7 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
           });
           return;
         }
-        await sendAndTrack(bot, chatId, "🎮 <b>Game Center</b>\n\nChoose how you want to play games:", {
+        await upsertCallbackView(bot, query, chatId, "🎮 <b>Game Center</b>\n\nChoose how you want to play games:", {
           reply_markup: {
             inline_keyboard: [
               [{ text: "🚀 Continue & Login", url: webLink }],
