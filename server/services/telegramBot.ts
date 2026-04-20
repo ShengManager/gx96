@@ -302,9 +302,10 @@ async function upsertCallbackView(
       return;
     } catch (err: any) {
       const msg = String(err?.message || "");
-      // Fallback to sending a new message only when edit is not possible.
+      // If another handler already edited to the same content, do NOT send a duplicate.
+      if (msg.includes("message is not modified")) return;
+      // Fallback to sending a new message only when edit is impossible.
       if (
-        msg.includes("message is not modified") ||
         msg.includes("message can't be edited") ||
         msg.includes("message to edit not found")
       ) {
