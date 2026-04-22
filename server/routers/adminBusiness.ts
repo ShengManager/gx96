@@ -8,7 +8,7 @@ import {
   bonusConfigs, bonusPromoGroups, banners, telegramBots, telegramBotMessages,
   countryConfigs, adminAccounts, subAccountPermissions, adminLogs,
 } from "../../drizzle/schema";
-import { eq, and, desc, gte, lte, sql } from "drizzle-orm";
+import { eq, and, desc, gte, lte, sql, inArray } from "drizzle-orm";
 import { startOfDayInTimezone, endOfDayInTimezone } from "../services/timezone";
 import { startBot, stopBot, restartBot, activeBots, getBotStatus, getAllBotStatuses } from "../services/telegramBot";
 import { getMiddlewaveConfig, getGameList, getProjectInfo, getActiveProviders } from "../services/middlewave";
@@ -871,8 +871,13 @@ export const adminTelegramRouter = router({
         const database = await getDb();
         if (!database) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
-        // Delete existing and re-insert
-        await database.delete(telegramBotMessages).where(eq(telegramBotMessages.botId, input.botId));
+        // Replace only provided language(s), keep other langs untouched.
+        const langs = Array.from(new Set(input.messages.map((m) => m.lang).filter(Boolean)));
+        if (langs.length > 0) {
+          await database
+            .delete(telegramBotMessages)
+            .where(and(eq(telegramBotMessages.botId, input.botId), inArray(telegramBotMessages.lang, langs)));
+        }
         if (input.messages.length > 0) {
           await database.insert(telegramBotMessages).values(
             input.messages.map(m => ({

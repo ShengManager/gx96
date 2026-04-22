@@ -16,6 +16,30 @@ import { Settings, Globe, Bot, Users, Plus, Save, Trash2, Eye, Shield, Palette, 
 import { toast } from "sonner";
 
 const MODULES = ["dashboard", "player", "deposit", "withdraw", "bonus", "bank", "setting", "telegram", "report", "banner", "subaccount", "log"];
+const TG_LANG_OPTIONS = [
+  { value: "en", label: "English" },
+  { value: "zh", label: "中文" },
+];
+const TG_MESSAGE_SECTIONS = [
+  { key: "welcome", label: "Welcome" },
+  { key: "game", label: "Game" },
+  { key: "game_continue", label: "Game Continue Button" },
+  { key: "bonus", label: "Bonus List" },
+  { key: "bonus_detail", label: "Bonus Detail" },
+  { key: "share", label: "Share Invite" },
+  { key: "contact", label: "Contact Us" },
+  { key: "deposit", label: "Deposit" },
+  { key: "withdraw", label: "Withdraw" },
+  { key: "setting", label: "Settings" },
+] as const;
+
+function makeEmptyTelegramEditorState() {
+  const state: Record<string, { title: string; body: string; imageUrl: string }> = {};
+  for (const s of TG_MESSAGE_SECTIONS) {
+    state[s.key] = { title: "", body: "", imageUrl: "" };
+  }
+  return state;
+}
 
 const TIMEZONE_OPTIONS = [
   { value: "UTC", city: "UTC" },
@@ -278,6 +302,50 @@ function TelegramSettings({ accessToken, canEdit }: { accessToken: string; canEd
 
   const [newToken, setNewToken] = useState("");
   const [newName, setNewName] = useState("");
+  const [selectedBotId, setSelectedBotId] = useState<number | null>(null);
+  const [editorLang, setEditorLang] = useState<"en" | "zh">("en");
+  const [messageEditor, setMessageEditor] = useState<Record<string, { title: string; body: string; imageUrl: string }>>(
+    makeEmptyTelegramEditorState()
+  );
+
+  useEffect(() => {
+    const bots = (botsQuery.data as any[]) || [];
+    if (!bots.length) {
+      setSelectedBotId(null);
+      return;
+    }
+    if (!selectedBotId || !bots.some((b) => Number(b.id) === Number(selectedBotId))) {
+      setSelectedBotId(Number(bots[0].id));
+    }
+  }, [botsQuery.data, selectedBotId]);
+
+  const botMessagesQuery = trpc.adminTelegram.messages.list.useQuery(
+    { token: accessToken, botId: selectedBotId || 0 },
+    { enabled: !!accessToken && !!selectedBotId }
+  );
+  const saveBotMessagesMutation = trpc.adminTelegram.messages.save.useMutation({
+    onSuccess: () => {
+      void botMessagesQuery.refetch();
+      toast.success("Telegram content saved");
+    },
+    onError: (err: any) => toast.error(err.message),
+  });
+
+  useEffect(() => {
+    const rows = (botMessagesQuery.data as any[]) || [];
+    const next = makeEmptyTelegramEditorState();
+    for (const row of rows) {
+      if (String(row.lang || "").toLowerCase() !== editorLang) continue;
+      const sec = String(row.section || "");
+      if (!next[sec]) continue;
+      next[sec] = {
+        title: String(row.title || ""),
+        body: String(row.body || ""),
+        imageUrl: String(row.imageUrl || ""),
+      };
+    }
+    setMessageEditor(next);
+  }, [botMessagesQuery.data, editorLang, selectedBotId]);
 
   if (botsQuery.isLoading) return <Card><CardContent className="p-8 text-center text-muted-foreground">Loading bots...</CardContent></Card>;
 
@@ -351,6 +419,138 @@ function TelegramSettings({ accessToken, canEdit }: { accessToken: string; canEd
               }}>
                 <Plus className="w-4 h-4 mr-2" /> Add
               </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Telegram Content Editor (Multi-language)</CardTitle>
+          <CardDescription>
+            Edit per-bot click content (Game, Contact, Bonus, Share, Settings...) with language mode.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <Label>Target Bot</Label>
+              <Select
+                value={selectedBotId ? String(selectedBotId) : ""}
+                onValueChange={(v) => setSelectedBotId(Number(v))}
+                disabled={!((botsQuery.data as any[]) || []).length}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a bot" />
+                </SelectTrigger>
+                <SelectContent>
+                  {((botsQuery.data as any[]) || []).map((bot: any) => (
+                    <SelectItem key={bot.id} value={String(bot.id)}>
+                      {bot.botName || `Bot #${bot.id}`} {bot.botUsername ? `(@${bot.botUsername})` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Language</Label>
+              <Select value={editorLang} onValueChange={(v) => setEditorLang(v === "zh" ? "zh" : "en")}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {TG_LANG_OPTIONS.map((lang) => (
+                    <SelectItem key={lang.value} value={lang.value}>
+                      {lang.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {!selectedBotId ? (
+            <p className="text-sm text-muted-foreground">Please create/select a Telegram bot first.</p>
+          ) : botMessagesQuery.isLoading ? (
+            <p className="text-sm text-muted-foreground">Loading bot content...</p>
+          ) : (
+            <div className="space-y-4">
+              {TG_MESSAGE_SECTIONS.map((sec) => (
+                <div key={sec.key} className="rounded-md border border-white/10 p-3 space-y-2">
+                  <p className="text-sm font-medium">{sec.label} <span className="text-xs text-muted-foreground">({sec.key})</span></p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs">Title / Main Text</Label>
+                      <Textarea
+                        value={messageEditor[sec.key]?.title || ""}
+                        onChange={(e) =>
+                          setMessageEditor((prev) => ({
+                            ...prev,
+                            [sec.key]: { ...prev[sec.key], title: e.target.value },
+                          }))
+                        }
+                        placeholder="Main title/text shown to user"
+                        disabled={!canEdit}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Body / Secondary Text</Label>
+                      <Textarea
+                        value={messageEditor[sec.key]?.body || ""}
+                        onChange={(e) =>
+                          setMessageEditor((prev) => ({
+                            ...prev,
+                            [sec.key]: { ...prev[sec.key], body: e.target.value },
+                          }))
+                        }
+                        placeholder="Secondary text or button text"
+                        disabled={!canEdit}
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Image URL / Link (optional)</Label>
+                    <Input
+                      value={messageEditor[sec.key]?.imageUrl || ""}
+                      onChange={(e) =>
+                        setMessageEditor((prev) => ({
+                          ...prev,
+                          [sec.key]: { ...prev[sec.key], imageUrl: e.target.value },
+                        }))
+                      }
+                      placeholder={sec.key === "contact" ? "https://t.me/your_support (Contact link)" : "https://..."}
+                      disabled={!canEdit}
+                    />
+                  </div>
+                </div>
+              ))}
+
+              {canEdit && (
+                <div className="flex justify-end">
+                  <Button
+                    disabled={saveBotMessagesMutation.isPending || !selectedBotId}
+                    onClick={() => {
+                      const messages = TG_MESSAGE_SECTIONS
+                        .map((sec) => ({
+                          lang: editorLang,
+                          section: sec.key,
+                          title: (messageEditor[sec.key]?.title || "").trim(),
+                          body: (messageEditor[sec.key]?.body || "").trim(),
+                          imageUrl: (messageEditor[sec.key]?.imageUrl || "").trim(),
+                        }))
+                        .filter((m) => m.title || m.body || m.imageUrl);
+                      saveBotMessagesMutation.mutate({
+                        token: accessToken,
+                        botId: selectedBotId!,
+                        messages,
+                      });
+                    }}
+                  >
+                    <Save className="w-4 h-4 mr-2" />
+                    {saveBotMessagesMutation.isPending ? "Saving..." : "Save Language Content"}
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </CardContent>

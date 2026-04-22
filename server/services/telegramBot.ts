@@ -382,6 +382,75 @@ function formatBonusSummaryLine(b: any): string {
   return "Promotion";
 }
 
+function normalizeSupportLink(raw: string): string {
+  const v = String(raw || "").trim();
+  if (!v) return "";
+  if (/^https?:\/\//i.test(v)) return v;
+  if (/^t\.me\//i.test(v)) return `https://${v}`;
+  if (v.startsWith("@")) return `https://t.me/${v.slice(1)}`;
+  if (/^[a-zA-Z0-9_]{3,}$/.test(v)) return `https://t.me/${v}`;
+  return "";
+}
+
+function isLinkLike(raw: string): boolean {
+  return !!normalizeSupportLink(raw);
+}
+
+function renderTextTemplate(template: string, vars: Record<string, string | number>) {
+  let out = String(template || "");
+  for (const [k, v] of Object.entries(vars)) {
+    const value = String(v ?? "");
+    out = out.replace(new RegExp(`\\{\\{\\s*${k}\\s*\\}\\}`, "g"), value);
+    out = out.replace(new RegExp(`\\{${k}\\}`, "g"), value);
+  }
+  return out;
+}
+
+async function getLocalizedBotSectionMessage(
+  botId: number,
+  lang: string,
+  section: string
+): Promise<{ title: string | null; body: string | null; imageUrl: string | null } | null> {
+  const database = await getDb();
+  if (!database) return null;
+  const safeLang = String(lang || "en").toLowerCase() === "zh" ? "zh" : "en";
+  const [exact] = await database
+    .select({
+      title: telegramBotMessages.title,
+      body: telegramBotMessages.body,
+      imageUrl: telegramBotMessages.imageUrl,
+    })
+    .from(telegramBotMessages)
+    .where(
+      and(
+        eq(telegramBotMessages.botId, botId),
+        eq(telegramBotMessages.lang, safeLang),
+        eq(telegramBotMessages.section, section)
+      )
+    )
+    .limit(1);
+  if (exact) return exact;
+  if (safeLang !== "en") {
+    const [fallback] = await database
+      .select({
+        title: telegramBotMessages.title,
+        body: telegramBotMessages.body,
+        imageUrl: telegramBotMessages.imageUrl,
+      })
+      .from(telegramBotMessages)
+      .where(
+        and(
+          eq(telegramBotMessages.botId, botId),
+          eq(telegramBotMessages.lang, "en"),
+          eq(telegramBotMessages.section, section)
+        )
+      )
+      .limit(1);
+    if (fallback) return fallback;
+  }
+  return null;
+}
+
 // ─── Handler Registration ───
 
 function registerHandlers(bot: TelegramBot, botConfig: any) {
@@ -931,6 +1000,7 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
 
       // ─── Games ───
       if (data === "games") {
+        const lang = String(player.lang || "en").toLowerCase() === "zh" ? "zh" : "en";
         const autoLoginToken = generateAutoLoginToken(player.id, player.adminId || adminId);
         const webLink = await resolvePlayerAutoLoginUrl(adminId, botConfig, autoLoginToken);
 
@@ -938,6 +1008,11 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         let customTitle = "🎮 <b>Game Center</b>";
         let customDesc = "Choose how you want to play games:";
         let continueText = "🚀 Continue & Login";
+        const msgGame = await getLocalizedBotSectionMessage(botConfig.id, lang, "game");
+        if (msgGame?.title?.trim()) customTitle = msgGame.title.trim();
+        if (msgGame?.body?.trim()) customDesc = msgGame.body.trim();
+        const msgGameContinue = await getLocalizedBotSectionMessage(botConfig.id, lang, "game_continue");
+        if (msgGameContinue?.title?.trim()) continueText = msgGameContinue.title.trim();
         const raw = (frontend as any)?.layoutInjections?.game?.dataJson;
         if (typeof raw === "string" && raw.trim()) {
           try {
@@ -1123,9 +1198,11 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
 
       // ─── Bonus ───
       if (data === "bonus") {
+        const lang = String(player.lang || "en").toLowerCase() === "zh" ? "zh" : "en";
         const bonuses = await db.getActiveBonusesByAdmin(adminId);
+        const msgBonus = await getLocalizedBotSectionMessage(botConfig.id, lang, "bonus");
         if (bonuses.length === 0) {
-          await render("🎁 No bonuses available.", {
+          await render(msgBonus?.body?.trim() || "🎁 No bonuses available.", {
             reply_markup: { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "main_menu" }]] },
           });
           return;
@@ -1140,13 +1217,17 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         }
         buttons.push([{ text: "⬅️ Back", callback_data: "main_menu" }]);
 
-        await render("🎁 <b>Available Bonuses</b>\n\nSelect a bonus to view details:", {
+        await render(
+          msgBonus?.title?.trim() || "🎁 <b>Available Bonuses</b>\n\nSelect a bonus to view details:",
+          {
           reply_markup: { inline_keyboard: buttons },
-        });
+          }
+        );
         return;
       }
 
       if (data.startsWith("bonus_detail:")) {
+        const lang = String(player.lang || "en").toLowerCase() === "zh" ? "zh" : "en";
         const bonusId = parseInt(data.split(":")[1]);
         const bonuses = await db.getActiveBonusesByAdmin(adminId);
         const bonus = bonuses.find((b: any) => Number(b.id) === Number(bonusId));
@@ -1159,6 +1240,7 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         const autoLoginToken = generateAutoLoginToken(player.id, player.adminId || adminId);
         const redirect = `/bonus?bonusId=${bonus.id}`;
         const webLink = await resolvePlayerAutoLoginUrl(adminId, botConfig, autoLoginToken, redirect);
+        const msgBonusDetail = await getLocalizedBotSectionMessage(botConfig.id, lang, "bonus_detail");
         let text =
           `🎁 <b>${bonus.name}</b>\n\n` +
           `${bonus.description ? `${bonus.description}\n\n` : ""}` +
@@ -1167,11 +1249,11 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         if (bonus.rolloverMultiplier) text += `🔄 Rollover: x${bonus.rolloverMultiplier}\n`;
         if (bonus.turnoverTarget) text += `📊 Turnover: x${parseFloat(bonus.turnoverTarget || "0").toFixed(2)}\n`;
         if (bonus.maxWithdraw) text += `💸 Max Withdraw: $${parseFloat(bonus.maxWithdraw || "0").toFixed(2)}\n`;
-        text += `\nℹ️ Claim is done on the frontend bonus page.`;
+        text += `\n${msgBonusDetail?.body?.trim() || "ℹ️ Claim is done on the frontend bonus page."}`;
 
         const rows: any[] = [];
         if (webLink) {
-          rows.push([{ text: "🚀 Open Bonus Page", url: webLink }]);
+          rows.push([{ text: msgBonusDetail?.title?.trim() || "🚀 Open Bonus Page", url: webLink }]);
         } else {
           rows.push([{ text: "⚠️ Frontend URL not configured", callback_data: "bonus" }]);
         }
@@ -1191,14 +1273,20 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
 
       // ─── Settings ───
       if (data === "settings") {
-        await render(`⚙️ <b>Settings</b>\n\n` +
-          `👤 Username: <code>${player.username}</code>\n` +
-          `📱 Phone: ${player.phone}\n` +
-          `🏦 Bank: ${player.bankName || "Not set"}\n` +
-          `📨 Invite Code: <code>${player.inviteCode}</code>`, {
+        const lang = String(player.lang || "en").toLowerCase() === "zh" ? "zh" : "en";
+        const msgSetting = await getLocalizedBotSectionMessage(botConfig.id, lang, "setting");
+        await render(
+          msgSetting?.title?.trim() ||
+            (lang === "zh"
+              ? `⚙️ <b>设置</b>\n\n请选择语言：`
+              : `⚙️ <b>Settings</b>\n\nChoose your language:`),
+          {
           reply_markup: {
             inline_keyboard: [
-              [{ text: "📨 Share Invite Code", callback_data: "share_invite" }],
+              [
+                { text: lang === "en" ? "✅ English" : "English", callback_data: "set_lang:en" },
+                { text: lang === "zh" ? "✅ 中文" : "中文", callback_data: "set_lang:zh" },
+              ],
               [{ text: "⬅️ Back", callback_data: "main_menu" }],
             ],
           },
@@ -1207,10 +1295,76 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
       }
 
       if (data === "share_invite") {
-        const shareText = `🎮 Join me on ${botConfig.botName || "TgGaming"}!\n\nUse my invite code: ${player.inviteCode}\n\nhttps://t.me/${botConfig.botUsername}?start=${player.inviteCode}`;
+        const lang = String(player.lang || "en").toLowerCase() === "zh" ? "zh" : "en";
+        const msgShare = await getLocalizedBotSectionMessage(botConfig.id, lang, "share");
+        const defaultShare =
+          `🎮 Join me on ${botConfig.botName || "TgGaming"}!\n\n` +
+          `Use my invite code: ${player.inviteCode}\n\n` +
+          `https://t.me/${botConfig.botUsername}?start=${player.inviteCode}`;
+        const shareText = renderTextTemplate(msgShare?.body?.trim() || defaultShare, {
+          botName: botConfig.botName || "TgGaming",
+          inviteCode: player.inviteCode,
+          botUsername: botConfig.botUsername || "",
+        });
         await render(shareText, {
           reply_markup: { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "settings" }]] },
         });
+        return;
+      }
+
+      if (data.startsWith("set_lang:")) {
+        const nextLang = data.split(":")[1] === "zh" ? "zh" : "en";
+        const database = await getDb();
+        if (database) {
+          await database
+            .update(players)
+            .set({ lang: nextLang })
+            .where(and(eq(players.id, player.id), eq(players.adminId, adminId)));
+        }
+        await render(
+          nextLang === "zh"
+            ? "✅ 语言已切换为中文。"
+            : "✅ Language switched to English.",
+          {
+            reply_markup: {
+              inline_keyboard: [[{ text: "⬅️ Back", callback_data: "settings" }]],
+            },
+          }
+        );
+        return;
+      }
+
+      if (data === "contact_us") {
+        const lang = String(player.lang || "en").toLowerCase() === "zh" ? "zh" : "en";
+        const msgContact = await getLocalizedBotSectionMessage(botConfig.id, lang, "contact");
+        const rawSupport = await db.getSetting(adminId, "support_link");
+        const supportUrl =
+          normalizeSupportLink(msgContact?.imageUrl || "") ||
+          normalizeSupportLink(msgContact?.body || "") ||
+          normalizeSupportLink(rawSupport || "");
+        if (!supportUrl) {
+          await render(
+            "❌ Support link is not configured yet. Please contact admin.",
+            { reply_markup: { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "main_menu" }]] } }
+          );
+          return;
+        }
+        const contactButtonText =
+          msgContact?.body?.trim() && !isLinkLike(msgContact.body)
+            ? msgContact.body.trim()
+            : "💬 Open Customer Service";
+        await render(
+          msgContact?.title?.trim() ||
+            "📞 <b>Contact Us</b>\n\nNeed help? Tap below to contact customer service:",
+          {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: contactButtonText, url: supportUrl }],
+              [{ text: "⬅️ Back", callback_data: "main_menu" }],
+            ],
+          },
+          }
+        );
         return;
       }
 
@@ -1452,9 +1606,10 @@ async function showMainMenu(
       { text: "🎁 Bonus", callback_data: "bonus" },
     ],
     [
-      { text: "💵 Balance", callback_data: "balance" },
-      { text: "⚙️ Settings", callback_data: "settings" },
+      { text: "📨 Share", callback_data: "share_invite" },
+      { text: "📞 Contact Us", callback_data: "contact_us" },
     ],
+    [{ text: "⚙️ Settings", callback_data: "settings" }],
   ];
 
   if (query) {
