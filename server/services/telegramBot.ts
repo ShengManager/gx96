@@ -23,7 +23,7 @@ import {
   systemSettings,
   bankCatalog,
 } from "../../drizzle/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, ne } from "drizzle-orm";
 import { hashPassword, generateAutoLoginToken } from "./auth";
 import { nanoid } from "nanoid";
 import { generateMiddlewavePlayerId } from "./playerId";
@@ -60,6 +60,10 @@ const mainMenuRenderQueue = new Map<number, Promise<void>>();
 const recentCallbackActionAt = new Map<string, number>();
 const callbackActionsInFlight = new Set<string>();
 const CALLBACK_ACTION_THROTTLE_MS = 500;
+const ACTIVE_VIEW_KEY = "__active__";
+const callbackChatInFlight = new Set<number>();
+const recentChatCallbackAt = new Map<number, number>();
+const CHAT_CALLBACK_THROTTLE_MS = 500;
 let warnedTelegramChatViewsUnavailable = false;
 
 // Bot diagnostic info: Map<botId, DiagnosticInfo>
@@ -288,25 +292,6 @@ async function cleanupMessages(bot: TelegramBot, chatId: number, keepLast = 1) {
   chatMessages.set(chatId, keepLast <= 0 ? [] : msgs.slice(-keepLast));
 }
 
-function normalizeCallbackViewKey(data: string): string {
-  const d = String(data || "").trim();
-  if (!d) return "general";
-  if (d === "main_menu") return "main_menu";
-  if (d === "games" || d === "games_open_frontend" || d === "games_providers" || d === "games_providers_legacy") {
-    return "games";
-  }
-  if (d.startsWith("game_provider:") || d.startsWith("game_type:") || d.startsWith("play:")) return "games";
-  if (d.startsWith("deposit")) return "deposit";
-  if (d.startsWith("withdraw")) return "withdraw";
-  if (d.startsWith("bonus")) return "bonus";
-  if (d.startsWith("share")) return "share";
-  if (d.startsWith("contact")) return "contact";
-  if (d.startsWith("setting") || d.startsWith("set_lang")) return "settings";
-  if (d.startsWith("register") || d.startsWith("reg_")) return "register";
-  const base = d.split(":")[0] || d;
-  return base.slice(0, 64);
-}
-
 async function getPersistedViewMessageId(botId: number, chatId: number, viewKey: string): Promise<number | null> {
   try {
     const database = await getDb();
@@ -349,6 +334,16 @@ async function savePersistedViewMessageId(botId: number, chatId: number, viewKey
           messageId,
         },
       });
+    // Keep only active key per chat to avoid stale legacy rows.
+    await database
+      .delete(telegramChatViews)
+      .where(
+        and(
+          eq(telegramChatViews.botId, botId),
+          eq(telegramChatViews.chatId, chatId),
+          ne(telegramChatViews.viewKey, ACTIVE_VIEW_KEY)
+        )
+      );
   } catch (err: any) {
     if (!warnedTelegramChatViewsUnavailable) {
       warnedTelegramChatViewsUnavailable = true;
@@ -871,6 +866,25 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
     }
 
     console.log(`[${botLabel}] 🔘 Callback: "${data}" from ${telegramId}`);
+    const lastChatAt = recentChatCallbackAt.get(chatId) || 0;
+    if (now - lastChatAt < CHAT_CALLBACK_THROTTLE_MS) {
+      console.log(
+        `[${botLabel}] ⏱️ Throttle chat callback in chat ${chatId} (delta=${now - lastChatAt}ms)`
+      );
+      try {
+        await bot.answerCallbackQuery(query.id, { text: "Please wait...", show_alert: false });
+      } catch {}
+      return;
+    }
+    if (callbackChatInFlight.has(chatId)) {
+      console.log(`[${botLabel}] 🔒 Chat callback busy in chat ${chatId}, skip "${data}"`);
+      try {
+        await bot.answerCallbackQuery(query.id, { text: "Processing...", show_alert: false });
+      } catch {}
+      return;
+    }
+    recentChatCallbackAt.set(chatId, now);
+    callbackChatInFlight.add(chatId);
     const actionKey = `${chatId}:${data}`;
     const lastActionAt = recentCallbackActionAt.get(actionKey) || 0;
     if (now - lastActionAt < CALLBACK_ACTION_THROTTLE_MS) {
@@ -883,6 +897,7 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
           show_alert: false,
         });
       } catch {}
+      callbackChatInFlight.delete(chatId);
       return;
     }
     if (callbackActionsInFlight.has(actionKey)) {
@@ -895,6 +910,7 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
           show_alert: false,
         });
       } catch {}
+      callbackChatInFlight.delete(chatId);
       return;
     }
     recentCallbackActionAt.set(actionKey, now);
@@ -918,7 +934,7 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
       }
 
       try {
-        const viewKey = normalizeCallbackViewKey(data);
+        const viewKey = ACTIVE_VIEW_KEY;
         const render = async (text: string, options?: any) =>
           upsertCallbackView(bot, query, chatId, text, options, {
             botId: botConfig.id,
@@ -1250,7 +1266,7 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
             reply_markup: { inline_keyboard: keyboard },
           }, {
             botId: botConfig.id,
-            viewKey: "games",
+            viewKey: ACTIVE_VIEW_KEY,
             sourceMessageId,
           });
         } else {
@@ -1258,7 +1274,7 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
             reply_markup: { inline_keyboard: keyboard },
           }, {
             botId: botConfig.id,
-            viewKey: "games",
+            viewKey: ACTIVE_VIEW_KEY,
             sourceMessageId,
           });
         }
@@ -1286,7 +1302,7 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
           },
         }, {
           botId: botConfig.id,
-          viewKey: "games",
+          viewKey: ACTIVE_VIEW_KEY,
           sourceMessageId,
         });
         return;
@@ -1618,6 +1634,8 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
       }
     } finally {
       callbackActionsInFlight.delete(actionKey);
+      callbackChatInFlight.delete(chatId);
+      recentChatCallbackAt.set(chatId, Date.now());
     }
   });
 
@@ -1881,7 +1899,7 @@ async function showMainMenu(
         }
       }
 
-      const persistedMainId = await getPersistedViewMessageId(botConfig.id, chatId, "main_menu");
+      const persistedMainId = await getPersistedViewMessageId(botConfig.id, chatId, ACTIVE_VIEW_KEY);
       const prevMainId = persistedMainId || latestMainMenuMessageIds.get(chatId);
       if (prevMainId) {
         try {
@@ -1901,7 +1919,7 @@ async function showMainMenu(
         reply_markup: { inline_keyboard: keyboard },
       });
       latestMainMenuMessageIds.set(chatId, sent.message_id);
-      await savePersistedViewMessageId(botConfig.id, chatId, "main_menu", sent.message_id);
+      await savePersistedViewMessageId(botConfig.id, chatId, ACTIVE_VIEW_KEY, sent.message_id);
     });
 
   mainMenuRenderQueue.set(chatId, currentTask);
