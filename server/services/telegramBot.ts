@@ -18,6 +18,7 @@ import {
   telegramBots,
   players,
   telegramBotMessages,
+  telegramChatViews,
   adminAccounts,
   systemSettings,
   bankCatalog,
@@ -59,6 +60,7 @@ const mainMenuRenderQueue = new Map<number, Promise<void>>();
 const recentCallbackActionAt = new Map<string, number>();
 const callbackActionsInFlight = new Set<string>();
 const CALLBACK_ACTION_THROTTLE_MS = 500;
+let warnedTelegramChatViewsUnavailable = false;
 
 // Bot diagnostic info: Map<botId, DiagnosticInfo>
 interface BotDiagnosticInfo {
@@ -286,6 +288,75 @@ async function cleanupMessages(bot: TelegramBot, chatId: number, keepLast = 1) {
   chatMessages.set(chatId, keepLast <= 0 ? [] : msgs.slice(-keepLast));
 }
 
+function normalizeCallbackViewKey(data: string): string {
+  const d = String(data || "").trim();
+  if (!d) return "general";
+  if (d === "main_menu") return "main_menu";
+  if (d === "games" || d === "games_open_frontend" || d === "games_providers" || d === "games_providers_legacy") {
+    return "games";
+  }
+  if (d.startsWith("game_provider:") || d.startsWith("game_type:") || d.startsWith("play:")) return "games";
+  if (d.startsWith("deposit")) return "deposit";
+  if (d.startsWith("withdraw")) return "withdraw";
+  if (d.startsWith("bonus")) return "bonus";
+  if (d.startsWith("share")) return "share";
+  if (d.startsWith("contact")) return "contact";
+  if (d.startsWith("setting") || d.startsWith("set_lang")) return "settings";
+  if (d.startsWith("register") || d.startsWith("reg_")) return "register";
+  const base = d.split(":")[0] || d;
+  return base.slice(0, 64);
+}
+
+async function getPersistedViewMessageId(botId: number, chatId: number, viewKey: string): Promise<number | null> {
+  try {
+    const database = await getDb();
+    if (!database) return null;
+    const [row] = await database
+      .select({ messageId: telegramChatViews.messageId })
+      .from(telegramChatViews)
+      .where(
+        and(
+          eq(telegramChatViews.botId, botId),
+          eq(telegramChatViews.chatId, chatId),
+          eq(telegramChatViews.viewKey, viewKey)
+        )
+      )
+      .limit(1);
+    return row?.messageId ? Number(row.messageId) : null;
+  } catch (err: any) {
+    if (!warnedTelegramChatViewsUnavailable) {
+      warnedTelegramChatViewsUnavailable = true;
+      console.warn(`[TG Bot] telegram_chat_views unavailable, fallback to memory only: ${err?.message || err}`);
+    }
+    return null;
+  }
+}
+
+async function savePersistedViewMessageId(botId: number, chatId: number, viewKey: string, messageId: number): Promise<void> {
+  try {
+    const database = await getDb();
+    if (!database) return;
+    await database
+      .insert(telegramChatViews)
+      .values({
+        botId,
+        chatId,
+        viewKey,
+        messageId,
+      })
+      .onDuplicateKeyUpdate({
+        set: {
+          messageId,
+        },
+      });
+  } catch (err: any) {
+    if (!warnedTelegramChatViewsUnavailable) {
+      warnedTelegramChatViewsUnavailable = true;
+      console.warn(`[TG Bot] telegram_chat_views unavailable, fallback to memory only: ${err?.message || err}`);
+    }
+  }
+}
+
 async function sendAndTrack(
   bot: TelegramBot,
   chatId: number,
@@ -305,10 +376,23 @@ async function upsertCallbackView(
   query: TelegramBot.CallbackQuery,
   chatId: number,
   text: string,
-  options?: any
+  options?: any,
+  persist?: { botId: number; viewKey: string; sourceMessageId?: number }
 ): Promise<void> {
+  if (persist?.botId && persist?.viewKey) {
+    const prevMessageId = await getPersistedViewMessageId(persist.botId, chatId, persist.viewKey);
+    if (prevMessageId && prevMessageId !== persist.sourceMessageId) {
+      try {
+        await bot.deleteMessage(chatId, prevMessageId);
+        untrackMessage(chatId, prevMessageId);
+      } catch {}
+    }
+  }
   // Unified UX: never edit callback message, always send a fresh one after old message is removed.
-  await sendAndTrack(bot, chatId, text, options);
+  const sent = await sendAndTrack(bot, chatId, text, options);
+  if (persist?.botId && persist?.viewKey) {
+    await savePersistedViewMessageId(persist.botId, chatId, persist.viewKey, sent.message_id);
+  }
 }
 
 async function upsertCallbackPhotoView(
@@ -317,12 +401,22 @@ async function upsertCallbackPhotoView(
   chatId: number,
   caption: string,
   imageUrl: string,
-  options?: any
+  options?: any,
+  persist?: { botId: number; viewKey: string; sourceMessageId?: number }
 ): Promise<void> {
   const mediaUrl = String(imageUrl || "").trim();
   if (!mediaUrl) {
-    await upsertCallbackView(bot, query, chatId, caption, options);
+    await upsertCallbackView(bot, query, chatId, caption, options, persist);
     return;
+  }
+  if (persist?.botId && persist?.viewKey) {
+    const prevMessageId = await getPersistedViewMessageId(persist.botId, chatId, persist.viewKey);
+    if (prevMessageId && prevMessageId !== persist.sourceMessageId) {
+      try {
+        await bot.deleteMessage(chatId, prevMessageId);
+        untrackMessage(chatId, prevMessageId);
+      } catch {}
+    }
   }
   // Unified UX: never edit callback message, always send a fresh one after old message is removed.
   const sent = await bot.sendPhoto(chatId, mediaUrl, {
@@ -331,6 +425,9 @@ async function upsertCallbackPhotoView(
     reply_markup: options?.reply_markup,
   } as any);
   trackMessage(chatId, sent.message_id);
+  if (persist?.botId && persist?.viewKey) {
+    await savePersistedViewMessageId(persist.botId, chatId, persist.viewKey, sent.message_id);
+  }
 }
 
 function buildLoginUrlFromBase(base: string, token: string, redirectPath?: string): string {
@@ -821,8 +918,13 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
       }
 
       try {
+        const viewKey = normalizeCallbackViewKey(data);
         const render = async (text: string, options?: any) =>
-          upsertCallbackView(bot, query, chatId, text, options);
+          upsertCallbackView(bot, query, chatId, text, options, {
+            botId: botConfig.id,
+            viewKey,
+            sourceMessageId,
+          });
 
       // ─── Register ───
       if (data.startsWith("register:")) {
@@ -1146,10 +1248,18 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         if (gameImageUrl) {
           await upsertCallbackPhotoView(bot, query, chatId, gameText, gameImageUrl, {
             reply_markup: { inline_keyboard: keyboard },
+          }, {
+            botId: botConfig.id,
+            viewKey: "games",
+            sourceMessageId,
           });
         } else {
           await upsertCallbackView(bot, query, chatId, gameText, {
             reply_markup: { inline_keyboard: keyboard },
+          }, {
+            botId: botConfig.id,
+            viewKey: "games",
+            sourceMessageId,
           });
         }
         return;
@@ -1174,6 +1284,10 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
               [{ text: "⬅️ Back", callback_data: "main_menu" }],
             ],
           },
+        }, {
+          botId: botConfig.id,
+          viewKey: "games",
+          sourceMessageId,
         });
         return;
       }
@@ -1767,7 +1881,8 @@ async function showMainMenu(
         }
       }
 
-      const prevMainId = latestMainMenuMessageIds.get(chatId);
+      const persistedMainId = await getPersistedViewMessageId(botConfig.id, chatId, "main_menu");
+      const prevMainId = persistedMainId || latestMainMenuMessageIds.get(chatId);
       if (prevMainId) {
         try {
           await bot.deleteMessage(chatId, prevMainId);
@@ -1786,6 +1901,7 @@ async function showMainMenu(
         reply_markup: { inline_keyboard: keyboard },
       });
       latestMainMenuMessageIds.set(chatId, sent.message_id);
+      await savePersistedViewMessageId(botConfig.id, chatId, "main_menu", sent.message_id);
     });
 
   mainMenuRenderQueue.set(chatId, currentTask);

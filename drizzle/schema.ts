@@ -87,6 +87,19 @@ export const telegramBotMessages = mysqlTable("telegram_bot_messages", {
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 
+// ─── 5b. Telegram Chat Views (persist last message per function) ───
+export const telegramChatViews = mysqlTable("telegram_chat_views", {
+  id: int("id").autoincrement().primaryKey(),
+  botId: int("botId").notNull(),
+  chatId: bigint("chatId", { mode: "number" }).notNull(),
+  viewKey: varchar("viewKey", { length: 64 }).notNull(),
+  messageId: int("messageId").notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  uniqueIndex("uq_tg_view").on(table.botId, table.chatId, table.viewKey),
+  index("idx_tg_view_chat").on(table.botId, table.chatId),
+]);
+
 // ─── 6. Players ───
 export const players = mysqlTable("players", {
   id: int("id").autoincrement().primaryKey(),
