@@ -49,6 +49,8 @@ const recentStartEvents = new Map<number, { messageId: number; at: number }>();
 const recentCallbackEvents = new Map<number, { queryId: string; data: string; at: number }>();
 const START_DEDUPE_WINDOW_MS = 10_000;
 const CALLBACK_DEDUPE_WINDOW_MS = 8_000;
+const recentMainMenuRenders = new Map<number, { sig: string; at: number }>();
+const MAIN_MENU_DEDUPE_WINDOW_MS = 6_000;
 
 // Bot diagnostic info: Map<botId, DiagnosticInfo>
 interface BotDiagnosticInfo {
@@ -324,6 +326,59 @@ async function upsertCallbackView(
   await sendAndTrack(bot, chatId, text, options);
 }
 
+async function upsertCallbackPhotoView(
+  bot: TelegramBot,
+  query: TelegramBot.CallbackQuery,
+  chatId: number,
+  caption: string,
+  imageUrl: string,
+  options?: any
+): Promise<void> {
+  const mediaUrl = String(imageUrl || "").trim();
+  if (!mediaUrl) {
+    await upsertCallbackView(bot, query, chatId, caption, options);
+    return;
+  }
+  const messageId = query.message?.message_id;
+  if (messageId) {
+    try {
+      await bot.editMessageMedia(
+        {
+          type: "photo",
+          media: mediaUrl,
+          caption,
+          parse_mode: "HTML",
+        } as any,
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: options?.reply_markup,
+        } as any
+      );
+      return;
+    } catch (err: any) {
+      const msg = String(err?.message || "");
+      if (msg.includes("message is not modified")) return;
+      if (
+        msg.includes("message can't be edited") ||
+        msg.includes("message to edit not found") ||
+        msg.includes("there is no photo") ||
+        msg.includes("can't parse")
+      ) {
+        // fallback below
+      } else {
+        throw err;
+      }
+    }
+  }
+  const sent = await bot.sendPhoto(chatId, mediaUrl, {
+    caption,
+    parse_mode: "HTML",
+    reply_markup: options?.reply_markup,
+  } as any);
+  trackMessage(chatId, sent.message_id);
+}
+
 function buildLoginUrlFromBase(base: string, token: string, redirectPath?: string): string {
   const raw = String(base || "").trim();
   if (!raw) return "";
@@ -404,6 +459,13 @@ function renderTextTemplate(template: string, vars: Record<string, string | numb
     out = out.replace(new RegExp(`\\{${k}\\}`, "g"), value);
   }
   return out;
+}
+
+function normalizeMediaUrl(raw: string): string {
+  const v = String(raw || "").trim();
+  if (!v) return "";
+  if (/^https?:\/\//i.test(v)) return v;
+  return "";
 }
 
 async function getLocalizedBotSectionMessage(
@@ -1036,9 +1098,17 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
           keyboard.push([{ text: continueText, callback_data: "games_open_frontend" }]);
         }
         keyboard.push([{ text: "⬅️ Back", callback_data: "main_menu" }]);
-        await upsertCallbackView(bot, query, chatId, `${customTitle}\n\n${customDesc}`, {
-          reply_markup: { inline_keyboard: keyboard },
-        });
+        const gameImageUrl = normalizeMediaUrl(msgGame?.imageUrl || "");
+        const gameText = `${customTitle}\n\n${customDesc}`;
+        if (gameImageUrl) {
+          await upsertCallbackPhotoView(bot, query, chatId, gameText, gameImageUrl, {
+            reply_markup: { inline_keyboard: keyboard },
+          });
+        } else {
+          await upsertCallbackView(bot, query, chatId, gameText, {
+            reply_markup: { inline_keyboard: keyboard },
+          });
+        }
         return;
       }
 
@@ -1611,6 +1681,19 @@ async function showMainMenu(
     ],
     [{ text: "⚙️ Settings", callback_data: "settings" }],
   ];
+
+  const sig = `${text}\n${JSON.stringify(keyboard)}`;
+  const now = Date.now();
+  const last = recentMainMenuRenders.get(chatId);
+  if (last && last.sig === sig && now - last.at < MAIN_MENU_DEDUPE_WINDOW_MS) {
+    return;
+  }
+  recentMainMenuRenders.set(chatId, { sig, at: now });
+  if (recentMainMenuRenders.size > 5000) {
+    recentMainMenuRenders.forEach((rec, cid) => {
+      if (now - rec.at > 10 * 60 * 1000) recentMainMenuRenders.delete(cid);
+    });
+  }
 
   if (query) {
     await upsertCallbackView(bot, query, chatId, text, {

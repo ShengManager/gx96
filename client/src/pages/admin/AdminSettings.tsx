@@ -23,7 +23,6 @@ const TG_LANG_OPTIONS = [
 const TG_MESSAGE_SECTIONS = [
   { key: "welcome", label: "Welcome" },
   { key: "game", label: "Game" },
-  { key: "game_continue", label: "Game Continue Button" },
   { key: "bonus", label: "Bonus List" },
   { key: "bonus_detail", label: "Bonus Detail" },
   { key: "share", label: "Share Invite" },
@@ -38,6 +37,7 @@ function makeEmptyTelegramEditorState() {
   for (const s of TG_MESSAGE_SECTIONS) {
     state[s.key] = { title: "", body: "", imageUrl: "" };
   }
+  state["game_continue"] = { title: "", body: "", imageUrl: "" };
   return state;
 }
 
@@ -522,6 +522,22 @@ function TelegramSettings({ accessToken, canEdit }: { accessToken: string; canEd
                       disabled={!canEdit}
                     />
                   </div>
+                  {sec.key === "game" && (
+                    <div className="space-y-1">
+                      <Label className="text-xs">Continue Button Text (Game Continue)</Label>
+                      <Input
+                        value={messageEditor["game_continue"]?.title || ""}
+                        onChange={(e) =>
+                          setMessageEditor((prev) => ({
+                            ...prev,
+                            game_continue: { ...(prev.game_continue || { title: "", body: "", imageUrl: "" }), title: e.target.value },
+                          }))
+                        }
+                        placeholder="e.g. 🚀 Continue & Login"
+                        disabled={!canEdit}
+                      />
+                    </div>
+                  )}
                 </div>
               ))}
 
@@ -530,14 +546,29 @@ function TelegramSettings({ accessToken, canEdit }: { accessToken: string; canEd
                   <Button
                     disabled={saveBotMessagesMutation.isPending || !selectedBotId}
                     onClick={() => {
-                      const messages = TG_MESSAGE_SECTIONS
+                      const baseMessages: Array<{
+                        lang: string;
+                        section: string;
+                        title: string;
+                        body: string;
+                        imageUrl: string;
+                      }> = TG_MESSAGE_SECTIONS
                         .map((sec) => ({
                           lang: editorLang,
                           section: sec.key,
                           title: (messageEditor[sec.key]?.title || "").trim(),
                           body: (messageEditor[sec.key]?.body || "").trim(),
                           imageUrl: (messageEditor[sec.key]?.imageUrl || "").trim(),
-                        }))
+                        }));
+                      const messages = [...baseMessages,
+                          {
+                            lang: editorLang,
+                            section: "game_continue",
+                            title: (messageEditor["game_continue"]?.title || "").trim(),
+                            body: "",
+                            imageUrl: "",
+                          },
+                        ]
                         .filter((m) => m.title || m.body || m.imageUrl);
                       saveBotMessagesMutation.mutate({
                         token: accessToken,
