@@ -74,7 +74,6 @@ export default function PlayerHome() {
     { token: accessToken || "" },
     { enabled: canFetch, refetchInterval: 30000 }
   );
-
   const banners = (bannersQuery.data as any) || [];
   const games = (gamesQuery.data as any)?.games || [];
   const liveBalance = (balanceQuery.data as any)?.balance;
@@ -311,6 +310,7 @@ export default function PlayerHome() {
           </Link>
         </div>
       )}
+
     </div>
   );
 }

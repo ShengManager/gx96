@@ -30,6 +30,8 @@ import { generateMiddlewavePlayerId } from "../services/playerId";
 import {
   notifyAdminNewDeposit,
   notifyAdminNewWithdrawal,
+  notifyAdminLiveChat,
+  notifyPlayerLiveChat,
 } from "../services/websocket";
 import { nanoid } from "nanoid";
 
@@ -564,6 +566,8 @@ export const playerApiRouter = router({
           ? await db.getFrontendSettings(payload.adminId)
           : await db.getAnyFrontendSettings();
       if (!settings) return null;
+      const targetAdminId = Number(payload?.type === "player" && payload.adminId ? payload.adminId : (settings as any).adminId || 0);
+      const rawSupportLink = targetAdminId > 0 ? await db.getSetting(targetAdminId, "support_link") : null;
       return {
         siteName: settings.siteName || "",
         logoUrl: settings.logoUrl || "",
@@ -572,6 +576,7 @@ export const playerApiRouter = router({
         customHeadHtml: settings.customHeadHtml || "",
         customBodyJs: settings.customBodyJs || "",
         layoutInjections: settings.layoutInjections || {},
+        supportLink: String(rawSupportLink || "").trim(),
       };
     }),
 
@@ -611,4 +616,69 @@ export const playerApiRouter = router({
         invitedPlayers,
       };
     }),
+
+  chat: router({
+    getOrCreateThread: publicProcedure
+      .input(z.object({ token: z.string() }))
+      .query(async ({ ctx }) => {
+        const player = requirePlayer(ctx);
+        const thread = await db.getOrCreateLiveChatThread(player.adminId!, player.id);
+        return { thread };
+      }),
+
+    listMessages: publicProcedure
+      .input(z.object({
+        token: z.string(),
+        threadId: z.number().optional(),
+        beforeId: z.number().optional(),
+        limit: z.number().default(50),
+      }))
+      .query(async ({ input, ctx }) => {
+        const player = requirePlayer(ctx);
+        const thread = input.threadId
+          ? await db.getLiveChatThreadByIdForPlayer(input.threadId, player.id)
+          : await db.getOrCreateLiveChatThread(player.adminId!, player.id);
+        if (!thread) throw new TRPCError({ code: "NOT_FOUND", message: "Thread not found" });
+        const messages = await db.listLiveChatMessages(thread.id, input.limit, input.beforeId);
+        return { thread, messages };
+      }),
+
+    sendMessage: publicProcedure
+      .input(z.object({
+        token: z.string(),
+        body: z.string().min(1).max(2000),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const player = requirePlayer(ctx);
+        const result = await db.sendLiveChatMessageAsPlayer(player.adminId!, player.id, input.body.trim());
+        notifyAdminLiveChat(player.adminId!, "chat:new_message", {
+          threadId: result.threadId,
+          messageId: result.messageId,
+          senderType: "player",
+          senderPlayerId: player.id,
+        });
+        notifyAdminLiveChat(player.adminId!, "chat:thread_updated", { threadId: result.threadId });
+        notifyPlayerLiveChat(player.id, "chat:new_message", {
+          threadId: result.threadId,
+          messageId: result.messageId,
+        });
+        return { success: true, threadId: result.threadId, messageId: result.messageId };
+      }),
+
+    markRead: publicProcedure
+      .input(z.object({
+        token: z.string(),
+        threadId: z.number().optional(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const player = requirePlayer(ctx);
+        const thread = input.threadId
+          ? await db.getLiveChatThreadByIdForPlayer(input.threadId, player.id)
+          : await db.getOrCreateLiveChatThread(player.adminId!, player.id);
+        if (!thread) throw new TRPCError({ code: "NOT_FOUND", message: "Thread not found" });
+        await db.markLiveChatReadByPlayer(thread.id, player.id);
+        notifyPlayerLiveChat(player.id, "chat:thread_updated", { threadId: thread.id });
+        return { success: true };
+      }),
+  }),
 });

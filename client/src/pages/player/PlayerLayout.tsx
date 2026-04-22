@@ -1,10 +1,11 @@
-import { ReactNode, useEffect, useMemo, useState } from "react";
+import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, Link } from "wouter";
 import { usePlayerAuth } from "@/contexts/PlayerAuthContext";
 import { trpc } from "@/lib/trpc";
+import { io, type Socket } from "socket.io-client";
 import {
   Gamepad2, Gift, ArrowDownCircle, ArrowUpCircle, User,
-  Home, Wallet, Bell, History,
+  Home, Wallet, Bell, History, MessageCircle,
 } from "lucide-react";
 
 const NAV_ITEMS = [
@@ -76,6 +77,8 @@ export default function PlayerLayout({ children }: { children: ReactNode }) {
   const [location] = useLocation();
   const { isAuthenticated, accessToken } = usePlayerAuth();
   const [logoLoadFailed, setLogoLoadFailed] = useState(false);
+  const lastMarkedThreadIdRef = useRef<number | null>(null);
+  const utils = trpc.useUtils();
 
   const frontendLayoutQuery = trpc.player.frontendLayout.useQuery(
     { token: accessToken || "" },
@@ -86,6 +89,11 @@ export default function PlayerLayout({ children }: { children: ReactNode }) {
     { token: accessToken || "" },
     { enabled: !!accessToken, refetchInterval: 30000 }
   );
+  const chatThreadQuery = trpc.player.chat.getOrCreateThread.useQuery(
+    { token: accessToken || "" },
+    { enabled: !!accessToken && isAuthenticated, refetchInterval: 20000 }
+  );
+  const chatMarkReadMutation = trpc.player.chat.markRead.useMutation();
 
   const layoutKey = getLayoutKey(location);
   const layoutConfig = (frontendLayoutQuery.data as any) || null;
@@ -140,6 +148,51 @@ export default function PlayerLayout({ children }: { children: ReactNode }) {
   }, [mergedCode.css, mergedCode.headHtml, mergedCode.bodyJs, location]);
 
   const balance = (balanceQuery.data as any)?.balance;
+  const unreadChatCount = Number((chatThreadQuery.data as any)?.thread?.unreadForPlayer || 0);
+  const activeThreadId = Number((chatThreadQuery.data as any)?.thread?.id || 0) || null;
+  const isChatRoute = location.startsWith("/chat");
+
+  useEffect(() => {
+    if (!accessToken || !isAuthenticated) return;
+    const socket: Socket = io(window.location.origin, {
+      path: "/ws",
+      auth: { token: accessToken },
+      transports: ["websocket", "polling"],
+      reconnectionAttempts: 10,
+      reconnectionDelay: 1500,
+    });
+    const onChat = () => {
+      void chatThreadQuery.refetch();
+    };
+    socket.on("chat:new_message", onChat);
+    socket.on("chat:thread_updated", onChat);
+    return () => {
+      socket.off("chat:new_message", onChat);
+      socket.off("chat:thread_updated", onChat);
+      socket.disconnect();
+    };
+  }, [accessToken, isAuthenticated, chatThreadQuery]);
+
+  useEffect(() => {
+    if (!isChatRoute || !accessToken || !activeThreadId) return;
+    if (lastMarkedThreadIdRef.current === activeThreadId && unreadChatCount <= 0) return;
+    lastMarkedThreadIdRef.current = activeThreadId;
+    chatMarkReadMutation.mutate({ token: accessToken, threadId: activeThreadId }, {
+      onSuccess: () => {
+        utils.player.chat.getOrCreateThread.setData({ token: accessToken }, (prev: any) => {
+          if (!prev?.thread) return prev;
+          return {
+            ...prev,
+            thread: {
+              ...prev.thread,
+              unreadForPlayer: 0,
+            },
+          };
+        });
+        void chatThreadQuery.refetch();
+      },
+    });
+  }, [isChatRoute, accessToken, activeThreadId, unreadChatCount, chatMarkReadMutation, chatThreadQuery, utils.player.chat.getOrCreateThread]);
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -266,6 +319,23 @@ export default function PlayerLayout({ children }: { children: ReactNode }) {
           })}
         </div>
       </nav>
+
+      {/* Global fixed contact/chat entry */}
+      <Link href={isAuthenticated ? "/chat" : "/login"}>
+        <button
+          type="button"
+          aria-label="Contact Support"
+          title="Contact Support"
+          className="fixed right-4 bottom-24 z-40 h-12 w-12 rounded-full border border-sky-400/40 bg-sky-500/85 text-white shadow-lg shadow-sky-900/40 backdrop-blur-sm transition hover:scale-105 hover:bg-sky-500 active:scale-95 flex items-center justify-center"
+        >
+          <MessageCircle className="h-5 w-5" />
+          {isAuthenticated && !isChatRoute && unreadChatCount > 0 && (
+            <span className="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">
+              {unreadChatCount > 99 ? "99+" : unreadChatCount}
+            </span>
+          )}
+        </button>
+      </Link>
     </div>
   );
 }

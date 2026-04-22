@@ -12,7 +12,7 @@ import {
   LayoutDashboard, Users, ArrowDownCircle, ArrowUpCircle,
   Gift, Building2, Settings, FileText, Image, Images, ClipboardList, Palette,
   LogOut, Menu, X, Shield, ChevronRight, ChevronDown,
-  Bell, Wifi, WifiOff, Globe, Bot,
+  Bell, Wifi, WifiOff, Globe, Bot, MessageSquare,
 } from "lucide-react";
 
 interface NavSection {
@@ -43,6 +43,7 @@ const NAV_SECTIONS: NavSection[] = [
       { path: "/admin/players", label: "Players", icon: Users, module: "player" },
       { path: "/admin/deposits", label: "Deposits", icon: ArrowDownCircle, module: "deposit" },
       { path: "/admin/withdrawals", label: "Withdrawals", icon: ArrowUpCircle, module: "withdraw" },
+      { path: "/admin/live-chat", label: "Live Chat", icon: MessageSquare, module: "livechat" },
     ],
   },
   {
@@ -77,10 +78,12 @@ const NAV_SECTIONS: NavSection[] = [
 function pendingBadgeForPath(
   path: string,
   deposits: number,
-  withdrawals: number
+  withdrawals: number,
+  liveChats: number
 ): number | undefined {
   if (path === "/admin/deposits" && deposits > 0) return deposits;
   if (path === "/admin/withdrawals" && withdrawals > 0) return withdrawals;
+  if (path === "/admin/live-chat" && liveChats > 0) return liveChats;
   return undefined;
 }
 
@@ -102,13 +105,32 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const invalidatePendingCounts = useCallback(() => {
     void utils.adminFinance.pendingActionCounts.invalidate();
   }, [utils]);
+  const invalidateLiveChatCounts = useCallback(() => {
+    void utils.adminLiveChat.counts.invalidate();
+  }, [utils]);
 
-  const { connected: wsConnected, unreadOrders, clearUnread } = useAdminNotifications({
+  const { connected: wsConnected, unreadOrders, unreadChats: wsUnreadChats, clearUnread } = useAdminNotifications({
     accessToken,
     enabled: !!user && !!accessToken,
     hasPermission,
+    currentAdminUserId: user?.id,
     onRealtimeOrder: invalidatePendingCounts,
+    onRealtimeChat: invalidateLiveChatCounts,
   });
+  const liveChatCountsQuery = trpc.adminLiveChat.counts.useQuery(
+    { token: accessToken ?? "" },
+    {
+      enabled: !!user && !!accessToken && hasPermission("livechat", "view"),
+      refetchInterval: 20_000,
+      staleTime: 10_000,
+    }
+  );
+  const unreadChats = Math.max(
+    Number((liveChatCountsQuery.data as any)?.unreadMessages || 0),
+    Number(wsUnreadChats || 0)
+  );
+  const chatBadgeCount = Number((liveChatCountsQuery.data as any)?.badgeCount || 0);
+  const unreadBell = unreadOrders + unreadChats;
 
   const visibleSections = NAV_SECTIONS.map(section => ({
     ...section,
@@ -166,7 +188,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                     const isActive = location === item.path || (item.path !== "/admin" && location.startsWith(item.path));
                     const d = pendingCountsQuery.data?.deposits ?? 0;
                     const w = pendingCountsQuery.data?.withdrawals ?? 0;
-                    const navBadge = pendingBadgeForPath(item.path, d, w);
+                    const navBadge = pendingBadgeForPath(item.path, d, w, chatBadgeCount);
                     return (
                       <Link key={item.path} href={item.path}>
                         <div
@@ -226,13 +248,13 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             variant="ghost"
             size="icon"
             className="relative"
-            title={unreadOrders > 0 ? `${unreadOrders} new order(s) — click to clear badge` : "Notifications"}
+            title={unreadBell > 0 ? `${unreadBell} unread notification(s) — click to clear badge` : "Notifications"}
             onClick={() => clearUnread()}
           >
             <Bell className="w-4 h-4" />
-            {unreadOrders > 0 && (
+            {unreadBell > 0 && (
               <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-0.5 bg-red-500 text-white text-[9px] rounded-full flex items-center justify-center">
-                {unreadOrders > 99 ? "99+" : unreadOrders}
+                {unreadBell > 99 ? "99+" : unreadBell}
               </span>
             )}
           </Button>

@@ -1,25 +1,16 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { usePlayerAuth } from "@/contexts/PlayerAuthContext";
 import { trpc } from "@/lib/trpc";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Link, useLocation } from "wouter";
 import {
-  Gamepad2, Search, Loader2, Flame, Dice1, Trophy,
-  Spade, Monitor, Smartphone, Download, X, Copy,
+  Gamepad2, Search, Loader2, Flame,
+  Monitor, Smartphone, Download, X, Copy,
 } from "lucide-react";
 import { toast } from "sonner";
-
-const TYPE_ICONS: Record<string, any> = {
-  Slot: Dice1,
-  Live: Monitor,
-  Sport: Trophy,
-  Card: Spade,
-  Fish: Flame,
-};
 
 function getGameCode(game: any): string {
   return game?.gameCode || game?.GameCode || "";
@@ -54,7 +45,6 @@ export default function PlayerGames() {
   const canFetch = !!accessToken && !authLoading;
   const [, setLocation] = useLocation();
   const [search, setSearch] = useState("");
-  const [groupBy, setGroupBy] = useState<"type" | "provider">("type");
   const [activeCategory, setActiveCategory] = useState("all");
   const [launching, setLaunching] = useState<string | null>(null);
   const [bonusConfirmOpen, setBonusConfirmOpen] = useState(false);
@@ -67,6 +57,11 @@ export default function PlayerGames() {
     loginAccount?: string;
     loginPassword?: string;
   } | null>(null);
+
+  const frontendLayoutQuery = trpc.player.frontendLayout.useQuery(
+    { token: accessToken || "" },
+    { enabled: true }
+  );
 
   const gamesQuery = trpc.player.gameList.useQuery(
     { token: accessToken || "" },
@@ -101,53 +96,43 @@ export default function PlayerGames() {
   });
 
   const games = (gamesQuery.data as any)?.games || [];
+  const layoutConfig = (frontendLayoutQuery.data as any) || null;
+  const gameLayoutMode = useMemo<"top_tabs" | "left_sidebar">(() => {
+    const map = (layoutConfig?.layoutInjections || {}) as Record<string, any>;
+    const gameCode = map.game || map.games || {};
+    const raw = String(gameCode?.dataJson || "").trim();
+    if (!raw) return "top_tabs";
+    try {
+      const parsed = JSON.parse(raw);
+      return String(parsed?.providerLayoutMode || "").trim() === "left_sidebar" ? "left_sidebar" : "top_tabs";
+    } catch {
+      return "top_tabs";
+    }
+  }, [layoutConfig]);
   const balanceNum = Math.max(0, Number((balanceQuery.data as any)?.balance || 0) || 0);
-
-  const TYPE_LABEL_MAP: Record<string, string> = {
-    // Common normalized types
-    Slot: "Slot",
-    Live: "Live",
-    Sport: "Sport",
-    Card: "Card",
-    Fish: "Fishing",
-    // Common vendor numeric type codes (can be extended per provider)
-    "1": "Slot",
-    "2": "Live",
-    "3": "Sport",
-    "4": "Card",
-    "5": "Fishing",
-    "301": "Slot",
-    "302": "Live",
-    "303": "Sport",
-    "304": "Card",
-    "305": "Fishing",
-    "401": "Slot",
-    "402": "Live",
-    "403": "Fishing",
-    "404": "Card",
-  };
-
-  const getTypeLabel = (game: any): string => {
-    const raw = String(getGameType(game)).trim();
-    return TYPE_LABEL_MAP[raw] || raw || "Other";
-  };
 
   const categories = useMemo(() => {
     const list: string[] = [];
     const seen = new Set<string>();
     games.forEach((g: any) => {
-      const key = groupBy === "provider" ? (getGameProvider(g) || "Unknown") : getTypeLabel(g);
+      const key = getGameProvider(g) || "Unknown";
       if (!seen.has(key)) { seen.add(key); list.push(key); }
     });
     return list;
-  }, [games, groupBy]);
+  }, [games]);
+
+  useEffect(() => {
+    if (activeCategory === "all") return;
+    if (!categories.includes(activeCategory)) {
+      setActiveCategory("all");
+    }
+  }, [activeCategory, categories]);
 
   const filteredGames = useMemo(() => {
     let result = games;
     if (activeCategory !== "all") {
       result = result.filter((g: any) => {
-        if (groupBy === "provider") return (getGameProvider(g) || "Unknown") === activeCategory;
-        return getTypeLabel(g) === activeCategory;
+        return (getGameProvider(g) || "Unknown") === activeCategory;
       });
     }
     if (search.trim()) {
@@ -159,7 +144,7 @@ export default function PlayerGames() {
       );
     }
     return result;
-  }, [games, activeCategory, groupBy, search]);
+  }, [games, activeCategory, search]);
 
   const doLaunch = (game: any) => {
     const gameCode = getGameCode(game);
@@ -226,61 +211,38 @@ export default function PlayerGames() {
         )}
       </div>
 
-      {/* Category Tabs - Horizontal scroll */}
-      <div className="flex gap-2 overflow-x-auto px-4 pb-1 scrollbar-hide">
-        <button
-          onClick={() => { setGroupBy("type"); setActiveCategory("all"); }}
-          className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-medium whitespace-nowrap transition-all flex-shrink-0 ${
-            groupBy === "type"
-              ? "bg-primary/20 border border-primary/40 text-primary"
-              : "bg-card border border-white/10 text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          By Type
-        </button>
-        <button
-          onClick={() => { setGroupBy("provider"); setActiveCategory("all"); }}
-          className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-medium whitespace-nowrap transition-all flex-shrink-0 ${
-            groupBy === "provider"
-              ? "bg-primary/20 border border-primary/40 text-primary"
-              : "bg-card border border-white/10 text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          By Company
-        </button>
-        <button
-          onClick={() => setActiveCategory("all")}
-          className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-medium whitespace-nowrap transition-all flex-shrink-0 ${
-            activeCategory === "all"
-              ? "bg-primary text-primary-foreground shadow-lg shadow-primary/25"
-              : "bg-card border border-white/10 text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          <Flame className="w-3.5 h-3.5" />
-          All ({games.length})
-        </button>
-        {categories.map(category => {
-          const Icon = TYPE_ICONS[category] || Gamepad2;
-          const count = games.filter((g: any) => {
-            if (groupBy === "provider") return (getGameProvider(g) || "Unknown") === category;
-            return getTypeLabel(g) === category;
-          }).length;
-          return (
-            <button
-              key={category}
-              onClick={() => setActiveCategory(category)}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-medium whitespace-nowrap transition-all flex-shrink-0 ${
-                activeCategory === category
-                  ? "bg-primary text-primary-foreground shadow-lg shadow-primary/25"
-                  : "bg-card border border-white/10 text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <Icon className="w-3.5 h-3.5" />
-              {category} ({count})
-            </button>
-          );
-        })}
-      </div>
+      {gameLayoutMode === "top_tabs" && (
+        <div className="flex gap-2 overflow-x-auto px-4 pb-1 scrollbar-hide">
+          <button
+            onClick={() => setActiveCategory("all")}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-medium whitespace-nowrap transition-all flex-shrink-0 ${
+              activeCategory === "all"
+                ? "bg-primary text-primary-foreground shadow-lg shadow-primary/25"
+                : "bg-card border border-white/10 text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <Flame className="w-3.5 h-3.5" />
+            All ({games.length})
+          </button>
+          {categories.map(category => {
+            const count = games.filter((g: any) => (getGameProvider(g) || "Unknown") === category).length;
+            return (
+              <button
+                key={category}
+                onClick={() => setActiveCategory(category)}
+                className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-medium whitespace-nowrap transition-all flex-shrink-0 ${
+                  activeCategory === category
+                    ? "bg-primary text-primary-foreground shadow-lg shadow-primary/25"
+                    : "bg-card border border-white/10 text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Gamepad2 className="w-3.5 h-3.5" />
+                {category} ({count})
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Results count */}
       {search && (
@@ -292,7 +254,7 @@ export default function PlayerGames() {
       )}
 
       {/* Game Grid */}
-      <div className="px-4 pb-4">
+      <div className={`pb-4 ${gameLayoutMode === "left_sidebar" ? "px-3 md:px-4" : "px-4"}`}>
         {gamesQuery.isPending ? (
           <div className="flex items-center justify-center py-16">
             <Loader2 className="w-8 h-8 animate-spin text-primary" />
@@ -304,66 +266,154 @@ export default function PlayerGames() {
             <Button variant="outline" size="sm" onClick={() => gamesQuery.refetch()}>Retry</Button>
           </div>
         ) : filteredGames.length > 0 ? (
-          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2.5">
-            {filteredGames.map((game: any) => (
-              <Card
-                key={getGameCode(game)}
-                className="overflow-hidden cursor-pointer hover:ring-1 hover:ring-primary/40 transition-all group active:scale-95"
-                onClick={() => handleLaunch(game)}
-              >
-                <div className="aspect-square bg-muted relative overflow-hidden">
-                  {getGameImage(game) ? (
-                    <img
-                      src={getGameImage(game)}
-                      alt={getGameName(game)}
-                      className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
-                      loading="lazy"
-                    />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-primary/10 to-primary/5">
-                      <Gamepad2 className="w-8 h-8 text-muted-foreground/40" />
-                    </div>
-                  )}
-                  {/* Launch overlay */}
-                  {launching === getGameCode(game) ? (
-                    <div className="absolute inset-0 bg-black/70 flex items-center justify-center backdrop-blur-sm">
-                      <Loader2 className="w-6 h-6 animate-spin text-white" />
-                    </div>
-                  ) : (
-                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center">
-                      <div className="w-10 h-10 rounded-full bg-primary/90 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity scale-75 group-hover:scale-100">
-                        <Gamepad2 className="w-5 h-5 text-white" />
-                      </div>
-                    </div>
-                  )}
-                  {/* Platform badges */}
-                  {getSupportedPlatforms(game).length > 0 && (
-                    <div className="absolute top-1 right-1 flex gap-0.5">
-                      {getSupportedPlatforms(game).includes("Web") && (
-                        <div className="w-5 h-5 rounded bg-black/50 backdrop-blur-sm flex items-center justify-center">
-                          <Monitor className="w-3 h-3 text-white/80" />
-                        </div>
-                      )}
-                      {getSupportedPlatforms(game).includes("H5") && (
-                        <div className="w-5 h-5 rounded bg-black/50 backdrop-blur-sm flex items-center justify-center">
-                          <Smartphone className="w-3 h-3 text-white/80" />
-                        </div>
-                      )}
-                      {getSupportedPlatforms(game).includes("Download") && (
-                        <div className="w-5 h-5 rounded bg-black/50 backdrop-blur-sm flex items-center justify-center">
-                          <Download className="w-3 h-3 text-white/80" />
-                        </div>
-                      )}
-                    </div>
-                  )}
+          gameLayoutMode === "left_sidebar" ? (
+            <div className="grid grid-cols-[120px_1fr] gap-3 md:grid-cols-[180px_1fr]">
+              <div className="rounded-xl border border-white/10 bg-card/50 p-2 h-fit sticky top-[72px]">
+                <div className="space-y-1">
+                  <button
+                    onClick={() => setActiveCategory("all")}
+                    className={`w-full text-left rounded-lg px-2.5 py-2 text-xs transition ${
+                      activeCategory === "all" ? "bg-primary text-primary-foreground" : "hover:bg-muted/60 text-muted-foreground"
+                    }`}
+                  >
+                    All ({games.length})
+                  </button>
+                  {categories.map((category) => {
+                    const count = games.filter((g: any) => (getGameProvider(g) || "Unknown") === category).length;
+                    return (
+                      <button
+                        key={category}
+                        onClick={() => setActiveCategory(category)}
+                        className={`w-full text-left rounded-lg px-2.5 py-2 text-xs transition ${
+                          activeCategory === category ? "bg-primary text-primary-foreground" : "hover:bg-muted/60 text-muted-foreground"
+                        }`}
+                      >
+                        <div className="truncate">{category}</div>
+                        <div className="text-[10px] opacity-80 mt-0.5">{count}</div>
+                      </button>
+                    );
+                  })}
                 </div>
-                <CardContent className="p-2">
-                  <p className="text-[11px] font-medium truncate leading-tight">{getGameName(game)}</p>
-                  <p className="text-[10px] text-muted-foreground truncate">{getGameProvider(game) || getGameType(game)}</p>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
+                {filteredGames.map((game: any) => (
+                  <Card
+                    key={getGameCode(game)}
+                    className="overflow-hidden cursor-pointer hover:ring-1 hover:ring-primary/40 transition-all group active:scale-95"
+                    onClick={() => handleLaunch(game)}
+                  >
+                    <div className="aspect-square bg-muted relative overflow-hidden">
+                      {getGameImage(game) ? (
+                        <img
+                          src={getGameImage(game)}
+                          alt={getGameName(game)}
+                          className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
+                          loading="lazy"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-primary/10 to-primary/5">
+                          <Gamepad2 className="w-8 h-8 text-muted-foreground/40" />
+                        </div>
+                      )}
+                      {launching === getGameCode(game) ? (
+                        <div className="absolute inset-0 bg-black/70 flex items-center justify-center backdrop-blur-sm">
+                          <Loader2 className="w-6 h-6 animate-spin text-white" />
+                        </div>
+                      ) : (
+                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center">
+                          <div className="w-10 h-10 rounded-full bg-primary/90 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity scale-75 group-hover:scale-100">
+                            <Gamepad2 className="w-5 h-5 text-white" />
+                          </div>
+                        </div>
+                      )}
+                      {getSupportedPlatforms(game).length > 0 && (
+                        <div className="absolute top-1 right-1 flex gap-0.5">
+                          {getSupportedPlatforms(game).includes("Web") && (
+                            <div className="w-5 h-5 rounded bg-black/50 backdrop-blur-sm flex items-center justify-center">
+                              <Monitor className="w-3 h-3 text-white/80" />
+                            </div>
+                          )}
+                          {getSupportedPlatforms(game).includes("H5") && (
+                            <div className="w-5 h-5 rounded bg-black/50 backdrop-blur-sm flex items-center justify-center">
+                              <Smartphone className="w-3 h-3 text-white/80" />
+                            </div>
+                          )}
+                          {getSupportedPlatforms(game).includes("Download") && (
+                            <div className="w-5 h-5 rounded bg-black/50 backdrop-blur-sm flex items-center justify-center">
+                              <Download className="w-3 h-3 text-white/80" />
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <CardContent className="p-2">
+                      <p className="text-[11px] font-medium truncate leading-tight">{getGameName(game)}</p>
+                      <p className="text-[10px] text-muted-foreground truncate">{getGameProvider(game) || getGameType(game)}</p>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2.5">
+              {filteredGames.map((game: any) => (
+                <Card
+                  key={getGameCode(game)}
+                  className="overflow-hidden cursor-pointer hover:ring-1 hover:ring-primary/40 transition-all group active:scale-95"
+                  onClick={() => handleLaunch(game)}
+                >
+                  <div className="aspect-square bg-muted relative overflow-hidden">
+                    {getGameImage(game) ? (
+                      <img
+                        src={getGameImage(game)}
+                        alt={getGameName(game)}
+                        className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
+                        loading="lazy"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-primary/10 to-primary/5">
+                        <Gamepad2 className="w-8 h-8 text-muted-foreground/40" />
+                      </div>
+                    )}
+                    {launching === getGameCode(game) ? (
+                      <div className="absolute inset-0 bg-black/70 flex items-center justify-center backdrop-blur-sm">
+                        <Loader2 className="w-6 h-6 animate-spin text-white" />
+                      </div>
+                    ) : (
+                      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center">
+                        <div className="w-10 h-10 rounded-full bg-primary/90 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity scale-75 group-hover:scale-100">
+                          <Gamepad2 className="w-5 h-5 text-white" />
+                        </div>
+                      </div>
+                    )}
+                    {getSupportedPlatforms(game).length > 0 && (
+                      <div className="absolute top-1 right-1 flex gap-0.5">
+                        {getSupportedPlatforms(game).includes("Web") && (
+                          <div className="w-5 h-5 rounded bg-black/50 backdrop-blur-sm flex items-center justify-center">
+                            <Monitor className="w-3 h-3 text-white/80" />
+                          </div>
+                        )}
+                        {getSupportedPlatforms(game).includes("H5") && (
+                          <div className="w-5 h-5 rounded bg-black/50 backdrop-blur-sm flex items-center justify-center">
+                            <Smartphone className="w-3 h-3 text-white/80" />
+                          </div>
+                        )}
+                        {getSupportedPlatforms(game).includes("Download") && (
+                          <div className="w-5 h-5 rounded bg-black/50 backdrop-blur-sm flex items-center justify-center">
+                            <Download className="w-3 h-3 text-white/80" />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <CardContent className="p-2">
+                    <p className="text-[11px] font-medium truncate leading-tight">{getGameName(game)}</p>
+                    <p className="text-[10px] text-muted-foreground truncate">{getGameProvider(game) || getGameType(game)}</p>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )
         ) : (
           <div className="text-center py-16">
             <Search className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />

@@ -17,6 +17,7 @@ import { javascript as jsLang } from "@codemirror/lang-javascript";
 import { json as jsonLang } from "@codemirror/lang-json";
 
 type LayoutCode = { css?: string; headHtml?: string; bodyHtml?: string; bodyJs?: string; dataJson?: string };
+type GameLayoutMode = "top_tabs" | "left_sidebar";
 
 type EditorLang = "css" | "html" | "javascript" | "json";
 
@@ -105,6 +106,7 @@ export default function AdminLayouts() {
     customBodyJs: "",
     layoutInjections: {} as Record<string, LayoutCode>,
   });
+  const [gameLayoutMode, setGameLayoutMode] = useState<GameLayoutMode>("top_tabs");
 
   useEffect(() => {
     const d = settingsQuery.data as any;
@@ -129,6 +131,18 @@ export default function AdminLayouts() {
       customBodyJs: d.customBodyJs || "",
       layoutInjections: normalizedInjections,
     });
+    const gameCfgRaw = String((normalizedInjections.game?.dataJson || "").trim());
+    if (gameCfgRaw) {
+      try {
+        const cfg = JSON.parse(gameCfgRaw);
+        const mode = String(cfg.providerLayoutMode || "").trim();
+        setGameLayoutMode(mode === "left_sidebar" ? "left_sidebar" : "top_tabs");
+      } catch {
+        setGameLayoutMode("top_tabs");
+      }
+    } else {
+      setGameLayoutMode("top_tabs");
+    }
   }, [settingsQuery.data]);
 
   const activeLayouts = useMemo(() => {
@@ -143,6 +157,20 @@ export default function AdminLayouts() {
   }, [form.layoutInjections]);
 
   const setLayoutCode = (layoutKey: string, patch: Partial<LayoutCode>) => {
+    if (layoutKey === "game" && typeof patch.dataJson === "string") {
+      const raw = patch.dataJson.trim();
+      if (!raw) {
+        setGameLayoutMode("top_tabs");
+      } else {
+        try {
+          const parsed = JSON.parse(raw);
+          const mode = String(parsed?.providerLayoutMode || "").trim();
+          setGameLayoutMode(mode === "left_sidebar" ? "left_sidebar" : "top_tabs");
+        } catch {
+          // Keep current visual selection while JSON is temporarily invalid during editing.
+        }
+      }
+    }
     setForm((prev) => ({
       ...prev,
       layoutInjections: {
@@ -154,6 +182,35 @@ export default function AdminLayouts() {
         },
       },
     }));
+  };
+
+  const setGameLayoutModeAndPersistDataJson = (mode: GameLayoutMode) => {
+    setGameLayoutMode(mode);
+    setForm((prev) => {
+      const current = prev.layoutInjections.game || {};
+      let cfg: any = {};
+      const raw = String(current.dataJson || "").trim();
+      if (raw) {
+        try {
+          cfg = JSON.parse(raw);
+        } catch {
+          cfg = {};
+        }
+      }
+      cfg.providerLayoutMode = mode;
+      cfg.providerAsPrimary = true;
+      return {
+        ...prev,
+        layoutInjections: {
+          ...prev.layoutInjections,
+          game: {
+            ...emptyLayoutCode(),
+            ...current,
+            dataJson: JSON.stringify(cfg, null, 2),
+          },
+        },
+      };
+    });
   };
 
   if (settingsQuery.isLoading) {
@@ -248,6 +305,42 @@ export default function AdminLayouts() {
           </CardDescription>
         </CardHeader>
         <CardContent>
+          <div className="rounded-md border border-white/10 p-3 space-y-3 mb-4">
+            <div>
+              <Label>Company Category Layout (`/games`)</Label>
+              <p className="text-xs text-muted-foreground mt-1">
+                Choose how provider/company categories are displayed on the games page.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <button
+                type="button"
+                disabled={!canEdit}
+                onClick={() => setGameLayoutModeAndPersistDataJson("top_tabs")}
+                className={`text-left rounded-md border p-3 transition ${
+                  gameLayoutMode === "top_tabs"
+                    ? "border-primary bg-primary/10"
+                    : "border-white/10 hover:border-white/30"
+                }`}
+              >
+                <div className="font-medium text-sm">Top Company Tabs</div>
+                <div className="text-xs text-muted-foreground mt-1">Top row = companies, below = game grid.</div>
+              </button>
+              <button
+                type="button"
+                disabled={!canEdit}
+                onClick={() => setGameLayoutModeAndPersistDataJson("left_sidebar")}
+                className={`text-left rounded-md border p-3 transition ${
+                  gameLayoutMode === "left_sidebar"
+                    ? "border-primary bg-primary/10"
+                    : "border-white/10 hover:border-white/30"
+                }`}
+              >
+                <div className="font-medium text-sm">Left Company Sidebar</div>
+                <div className="text-xs text-muted-foreground mt-1">Left side = company list, right side = game grid.</div>
+              </button>
+            </div>
+          </div>
           <Tabs defaultValue="global" className="space-y-4">
             <TabsList className="flex-wrap h-auto gap-1">
               {LAYOUT_KEYS.map((item) => (

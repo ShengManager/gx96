@@ -510,6 +510,46 @@ export const refreshTokens = mysqlTable("refresh_tokens", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
+// ─── 22. Live Chat Threads / Messages ───
+export const liveChatThreads = mysqlTable("live_chat_threads", {
+  id: int("id").autoincrement().primaryKey(),
+  adminId: int("adminId").notNull(),
+  playerId: int("playerId").notNull(),
+  status: mysqlEnum("status", ["open", "handling", "finished"]).default("open").notNull(),
+  handledBy: int("handledBy"),
+  handledAt: timestamp("handledAt"),
+  finishedBy: int("finishedBy"),
+  finishedAt: timestamp("finishedAt"),
+  lastMessageAt: timestamp("lastMessageAt").defaultNow().notNull(),
+  unreadForAdmin: int("unreadForAdmin").default(0).notNull(),
+  unreadForPlayer: int("unreadForPlayer").default(0).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  uniqueIndex("uq_live_chat_thread").on(table.adminId, table.playerId),
+  index("idx_live_chat_admin_status").on(table.adminId, table.status, table.lastMessageAt),
+  index("idx_live_chat_admin_unread").on(table.adminId, table.unreadForAdmin),
+  index("idx_live_chat_player_status").on(table.playerId, table.status),
+  index("idx_live_chat_finished_at").on(table.status, table.finishedAt),
+]);
+
+export const liveChatMessages = mysqlTable("live_chat_messages", {
+  id: int("id").autoincrement().primaryKey(),
+  threadId: int("threadId").notNull(),
+  adminId: int("adminId").notNull(),
+  senderType: mysqlEnum("senderType", ["player", "admin", "system"]).notNull(),
+  senderAdminId: int("senderAdminId"),
+  senderPlayerId: int("senderPlayerId"),
+  body: text("body").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_live_chat_thread_time").on(table.threadId, table.createdAt),
+  index("idx_live_chat_admin_time").on(table.adminId, table.createdAt),
+]);
+
+export type LiveChatThread = typeof liveChatThreads.$inferSelect;
+export type LiveChatMessage = typeof liveChatMessages.$inferSelect;
+
 // ─── 22. Frontend Settings (per admin/tenant) ───
 export const frontendSettings = mysqlTable("frontend_settings", {
   id: int("id").autoincrement().primaryKey(),

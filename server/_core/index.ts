@@ -13,7 +13,7 @@ import { startAllBots, isTelegramPollingEnabled } from "../services/telegramBot"
 import { nanoid } from "nanoid";
 import multer from "multer";
 import { verifyAccessToken, refreshAccessToken } from "../services/auth";
-import { getDb, createAdminLog } from "../db";
+import { getDb, createAdminLog, cleanupFinishedLiveChatsOlderThan } from "../db";
 import { deposits, adminMediaLibrary } from "../../drizzle/schema";
 import { eq, and } from "drizzle-orm";
 import { checkPermission } from "../services/middleware";
@@ -54,6 +54,18 @@ async function startServer() {
 
   // Initialize WebSocket
   initWebSocket(server);
+
+  // Periodic cleanup for finished live-chat threads.
+  setInterval(async () => {
+    try {
+      const deleted = await cleanupFinishedLiveChatsOlderThan(24, 200);
+      if (deleted > 0) {
+        console.log(`[LiveChat] Cleanup removed ${deleted} finished thread(s).`);
+      }
+    } catch (err: any) {
+      console.error("[LiveChat] Cleanup failed:", err?.message || err);
+    }
+  }, 60 * 60 * 1000);
 
   const playerImageUpload = multer({
     storage: multer.memoryStorage(),

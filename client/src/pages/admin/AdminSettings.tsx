@@ -16,7 +16,7 @@ import { ImageUrlField } from "@/components/admin/ImageUrlField";
 import { Settings, Globe, Bot, Users, Plus, Save, Trash2, Eye, Shield, Palette, Lock, Clock, ChevronLeft, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 
-const MODULES = ["dashboard", "player", "deposit", "withdraw", "bonus", "bank", "setting", "telegram", "report", "banner", "subaccount", "log"];
+const MODULES = ["dashboard", "player", "deposit", "withdraw", "livechat", "bonus", "bank", "setting", "telegram", "report", "banner", "subaccount", "log"];
 const TG_LANG_OPTIONS = [
   { value: "en", label: "English" },
   { value: "zh", label: "中文" },
@@ -1229,7 +1229,21 @@ function DomainAclSettings({ accessToken, canEdit }: { accessToken: string; canE
 
 // ─── Sub-Account Settings ───
 function SubAccountSettings({ accessToken }: { accessToken: string }) {
+  const { hasPermission } = useAdminAuth();
+  const canEdit = hasPermission("subaccount", "edit");
   const subsQuery = trpc.adminSubAccounts.list.useQuery({ token: accessToken }, { enabled: !!accessToken });
+  const createSubMutation = trpc.adminAuth.createSubAccount.useMutation({
+    onSuccess: () => {
+      subsQuery.refetch();
+      toast.success("Sub-account created");
+      setCreateOpen(false);
+      setCreateUsername("");
+      setCreatePassword("");
+      setCreateDisplayName("");
+      setCreatePerms(initPerms());
+    },
+    onError: (err: any) => toast.error(err.message),
+  });
   const updatePermsMutation = trpc.adminSubAccounts.updatePermissions.useMutation({
     onSuccess: () => { subsQuery.refetch(); toast.success("Permissions updated"); },
     onError: (err: any) => toast.error(err.message),
@@ -1241,6 +1255,20 @@ function SubAccountSettings({ accessToken }: { accessToken: string }) {
 
   const [editingSub, setEditingSub] = useState<any>(null);
   const [perms, setPerms] = useState<Record<string, { canView: boolean; canEdit: boolean; canDelete: boolean }>>({});
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createUsername, setCreateUsername] = useState("");
+  const [createPassword, setCreatePassword] = useState("");
+  const [createDisplayName, setCreateDisplayName] = useState("");
+  const initPerms = () => {
+    const p: Record<string, { canView: boolean; canEdit: boolean; canDelete: boolean }> = {};
+    MODULES.forEach((m) => {
+      p[m] = { canView: false, canEdit: false, canDelete: false };
+    });
+    // Default minimal access
+    p.dashboard = { canView: true, canEdit: false, canDelete: false };
+    return p;
+  };
+  const [createPerms, setCreatePerms] = useState<Record<string, { canView: boolean; canEdit: boolean; canDelete: boolean }>>(initPerms);
 
   const openPermEditor = (sub: any) => {
     setEditingSub(sub);
@@ -1258,6 +1286,28 @@ function SubAccountSettings({ accessToken }: { accessToken: string }) {
     updatePermsMutation.mutate({ token: accessToken, subAccountId: editingSub.id, permissions });
     setEditingSub(null);
   };
+  const submitCreate = () => {
+    if (!createUsername.trim()) {
+      toast.error("Username is required");
+      return;
+    }
+    if (createUsername.trim().length < 3) {
+      toast.error("Username must be at least 3 characters");
+      return;
+    }
+    if (!createPassword || createPassword.length < 6) {
+      toast.error("Password must be at least 6 characters");
+      return;
+    }
+    const permissions = Object.entries(createPerms).map(([module, p]) => ({ module, ...p }));
+    createSubMutation.mutate({
+      token: accessToken,
+      username: createUsername.trim(),
+      password: createPassword,
+      displayName: createDisplayName.trim() || undefined,
+      permissions,
+    });
+  };
 
   if (subsQuery.isLoading) return <Card><CardContent className="p-8 text-center text-muted-foreground">Loading sub-accounts...</CardContent></Card>;
 
@@ -1268,6 +1318,13 @@ function SubAccountSettings({ accessToken }: { accessToken: string }) {
         <CardDescription>Manage sub-accounts and their module-level permissions</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {canEdit && (
+          <div className="flex justify-end">
+            <Button onClick={() => setCreateOpen(true)}>
+              <Plus className="w-4 h-4 mr-2" /> New Sub-Account
+            </Button>
+          </div>
+        )}
         <Table>
           <TableHeader>
             <TableRow>
@@ -1289,10 +1346,15 @@ function SubAccountSettings({ accessToken }: { accessToken: string }) {
                 </TableCell>
                 <TableCell className="text-right">
                   <div className="flex items-center justify-end gap-1">
-                    <Button variant="ghost" size="icon" onClick={() => openPermEditor(sub)}>
+                    <Button variant="ghost" size="icon" onClick={() => openPermEditor(sub)} disabled={!canEdit}>
                       <Shield className="w-4 h-4" />
                     </Button>
-                    <Button variant="ghost" size="icon" onClick={() => toggleMutation.mutate({ token: accessToken, subAccountId: sub.id, isActive: !sub.isActive })}>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      disabled={!canEdit}
+                      onClick={() => toggleMutation.mutate({ token: accessToken, subAccountId: sub.id, isActive: !sub.isActive })}
+                    >
                       {sub.isActive ? <Eye className="w-4 h-4 text-red-500" /> : <Eye className="w-4 h-4 text-green-500" />}
                     </Button>
                   </div>
@@ -1301,7 +1363,91 @@ function SubAccountSettings({ accessToken }: { accessToken: string }) {
             ))}
           </TableBody>
         </Table>
-        {(subsQuery.data as any[])?.length === 0 && <p className="text-center text-muted-foreground py-4">No sub-accounts found. Create one via the admin auth API.</p>}
+        {(subsQuery.data as any[])?.length === 0 && <p className="text-center text-muted-foreground py-4">No sub-accounts found yet.</p>}
+
+        <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+          <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Create Sub-Account</DialogTitle>
+            </DialogHeader>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="space-y-1">
+                <Label className="text-xs">Username</Label>
+                <Input value={createUsername} onChange={(e) => setCreateUsername(e.target.value)} placeholder="sub_admin_01" />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Password</Label>
+                <Input type="password" value={createPassword} onChange={(e) => setCreatePassword(e.target.value)} placeholder="At least 6 chars" />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Display Name (Optional)</Label>
+                <Input value={createDisplayName} onChange={(e) => setCreateDisplayName(e.target.value)} placeholder="Cashier A" />
+              </div>
+            </div>
+
+            <div className="rounded-md border border-white/10 p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <Label>Initial Permissions</Label>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const next: any = {};
+                      MODULES.forEach((m) => { next[m] = { canView: true, canEdit: false, canDelete: false }; });
+                      setCreatePerms(next);
+                    }}
+                  >
+                    View All
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCreatePerms(initPerms())}
+                  >
+                    Reset
+                  </Button>
+                </div>
+              </div>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Module</TableHead>
+                    <TableHead className="text-center">View</TableHead>
+                    <TableHead className="text-center">Edit</TableHead>
+                    <TableHead className="text-center">Delete</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {MODULES.map(m => (
+                    <TableRow key={`create-${m}`}>
+                      <TableCell className="capitalize font-medium">{m}</TableCell>
+                      <TableCell className="text-center">
+                        <Checkbox checked={createPerms[m]?.canView || false} onCheckedChange={(v) => setCreatePerms(p => ({ ...p, [m]: { ...p[m], canView: !!v } }))} />
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <Checkbox checked={createPerms[m]?.canEdit || false} onCheckedChange={(v) => setCreatePerms(p => ({ ...p, [m]: { ...p[m], canEdit: !!v } }))} />
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <Checkbox checked={createPerms[m]?.canDelete || false} onCheckedChange={(v) => setCreatePerms(p => ({ ...p, [m]: { ...p[m], canDelete: !!v } }))} />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
+              <Button onClick={submitCreate} disabled={createSubMutation.isPending}>
+                <Save className="w-4 h-4 mr-2" />
+                {createSubMutation.isPending ? "Creating..." : "Create Sub-Account"}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
 
         <Dialog open={!!editingSub} onOpenChange={(open) => { if (!open) setEditingSub(null); }}>
           <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">

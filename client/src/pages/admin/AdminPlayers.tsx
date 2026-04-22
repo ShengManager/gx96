@@ -8,11 +8,13 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Search, Eye, UserCheck, UserX, Star, ChevronLeft, ChevronRight, AlertTriangle, RefreshCw, Loader2, Phone, Globe, Wallet, Calendar, Copy, LogIn, Users } from "lucide-react";
+import { Search, Eye, UserCheck, UserX, Star, ChevronLeft, ChevronRight, AlertTriangle, RefreshCw, Loader2, Phone, Globe, Wallet, Calendar, Copy, LogIn, Users, MessageSquare } from "lucide-react";
 import { toast } from "sonner";
+import { useLocation } from "wouter";
 
 export default function AdminPlayers() {
   const { accessToken, hasPermission } = useAdminAuth();
+  const [, setLocation] = useLocation();
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [selectedPlayer, setSelectedPlayer] = useState<number | null>(null);
@@ -68,6 +70,9 @@ export default function AdminPlayers() {
   const loginAsPlayerMutation = trpc.adminPlayers.loginAsPlayer.useMutation({
     onError: (err: any) => toast.error(err.message || "Failed to open frontend login"),
   });
+  const startChatMutation = trpc.adminLiveChat.threads.openByPlayer.useMutation({
+    onError: (err: any) => toast.error(err.message || "Failed to start chat"),
+  });
 
   const [showAnomalies, setShowAnomalies] = useState(false);
   const [scanEnabled, setScanEnabled] = useState(false);
@@ -95,6 +100,20 @@ export default function AdminPlayers() {
       }
     } catch {
       // handled in mutation onError
+    }
+  };
+  const handleStartChat = async (playerId: number) => {
+    if (!accessToken) return;
+    try {
+      const res = await startChatMutation.mutateAsync({ token: accessToken, playerId });
+      const threadId = Number((res as any)?.thread?.id || 0);
+      if (!threadId) {
+        toast.error("Failed to open chat thread");
+        return;
+      }
+      setLocation(`/admin/live-chat?threadId=${threadId}`);
+    } catch {
+      // handled by mutation onError
     }
   };
 
@@ -279,6 +298,21 @@ export default function AdminPlayers() {
                       >
                         <LogIn className="w-4 h-4 text-primary" />
                       </Button>
+                      {hasPermission("livechat", "edit") && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          title="Start live chat"
+                          onClick={() => handleStartChat(player.id)}
+                          disabled={startChatMutation.isPending}
+                        >
+                          {startChatMutation.isPending ? (
+                            <Loader2 className="w-4 h-4 animate-spin text-cyan-400" />
+                          ) : (
+                            <MessageSquare className="w-4 h-4 text-cyan-400" />
+                          )}
+                        </Button>
+                      )}
                       {hasPermission("player", "edit") && (
                         <Button
                           variant="ghost"

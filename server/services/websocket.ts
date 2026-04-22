@@ -78,6 +78,15 @@ export function notifyAdminUser(adminUserId: number, event: string, data: any): 
   io?.to(`admin-user:${adminUserId}`).emit(event, data);
 }
 
+// Live chat events
+export function notifyAdminLiveChat(adminId: number, event: string, data: any): void {
+  io?.to(`admin:${adminId}`).emit(event, data);
+}
+
+export function notifyPlayerLiveChat(playerId: number, event: string, data: any): void {
+  io?.to(`player:${playerId}`).emit(event, data);
+}
+
 // ─── WebSocket → Telegram Notification Bridge ───
 // These functions emit WS events AND push Telegram messages to the player's chat
 

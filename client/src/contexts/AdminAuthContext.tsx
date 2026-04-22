@@ -150,6 +150,12 @@ export function AdminAuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
       return;
     }
+    if (!accessToken) {
+      recoveringFromMeErrorRef.current = false;
+      setUser(null);
+      setLoading(false);
+      return;
+    }
 
     if (meQuery.data) {
       recoveringFromMeErrorRef.current = false;
@@ -175,10 +181,6 @@ export function AdminAuthProvider({ children }: { children: React.ReactNode }) {
           recoveringFromMeErrorRef.current = false;
         });
       });
-    } else if (!accessToken) {
-      recoveringFromMeErrorRef.current = false;
-      setUser(null);
-      setLoading(false);
     }
   }, [authReady, isAdminArea, meQuery.data, meQuery.isError, meQuery.isSuccess, accessToken, scheduleRefresh, clearAuth, refreshSession]);
 

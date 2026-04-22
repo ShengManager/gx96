@@ -1,4 +1,4 @@
-import { eq, and, desc, asc, gte, lte, like, sql, count, sum, or, inArray } from "drizzle-orm";
+import { eq, and, desc, asc, gte, lte, like, sql, count, sum, or, inArray, lt } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser, users,
@@ -26,6 +26,8 @@ import {
   depositPresets,
   countryConfigs,
   refreshTokens,
+  liveChatThreads,
+  liveChatMessages,
   frontendSettings,
   domainAcl,
 } from "../drizzle/schema";
@@ -632,6 +634,218 @@ export async function getWithdrawBanks(adminId: number) {
       or(eq(banks.usageType, "withdraw"), eq(banks.usageType, "both"))
     )
   ).orderBy(asc(banks.sortOrder));
+}
+
+// ─── Live Chat ───
+export async function getLiveChatThreadByAdminPlayer(adminId: number, playerId: number) {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db
+    .select()
+    .from(liveChatThreads)
+    .where(and(eq(liveChatThreads.adminId, adminId), eq(liveChatThreads.playerId, playerId)))
+    .limit(1);
+  return rows[0] || null;
+}
+
+export async function getLiveChatThreadById(threadId: number) {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db.select().from(liveChatThreads).where(eq(liveChatThreads.id, threadId)).limit(1);
+  return rows[0] || null;
+}
+
+export async function getLiveChatThreadByIdForAdmin(threadId: number, adminId: number) {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db
+    .select()
+    .from(liveChatThreads)
+    .where(and(eq(liveChatThreads.id, threadId), eq(liveChatThreads.adminId, adminId)))
+    .limit(1);
+  return rows[0] || null;
+}
+
+export async function getLiveChatThreadByIdForPlayer(threadId: number, playerId: number) {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db
+    .select()
+    .from(liveChatThreads)
+    .where(and(eq(liveChatThreads.id, threadId), eq(liveChatThreads.playerId, playerId)))
+    .limit(1);
+  return rows[0] || null;
+}
+
+export async function getOrCreateLiveChatThread(adminId: number, playerId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const existing = await getLiveChatThreadByAdminPlayer(adminId, playerId);
+  if (existing) return existing;
+  await db.insert(liveChatThreads).values({
+    adminId,
+    playerId,
+    status: "open",
+    unreadForAdmin: 0,
+    unreadForPlayer: 0,
+  }).onDuplicateKeyUpdate({
+    set: {
+      playerId: sql`${liveChatThreads.playerId}`,
+    },
+  });
+  const created = await getLiveChatThreadByAdminPlayer(adminId, playerId);
+  if (!created) throw new Error("Failed to create chat thread");
+  return created;
+}
+
+export async function listLiveChatMessages(threadId: number, limit = 50, beforeId?: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const conditions = [eq(liveChatMessages.threadId, threadId)];
+  if (beforeId && beforeId > 0) {
+    conditions.push(lt(liveChatMessages.id, beforeId));
+  }
+  const rows = await db
+    .select()
+    .from(liveChatMessages)
+    .where(and(...conditions))
+    .orderBy(desc(liveChatMessages.id))
+    .limit(Math.max(1, Math.min(100, limit)));
+  return rows.reverse();
+}
+
+export async function sendLiveChatMessageAsPlayer(adminId: number, playerId: number, body: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const thread = await getOrCreateLiveChatThread(adminId, playerId);
+  const now = new Date();
+  if (thread.status === "finished") {
+    await db.update(liveChatThreads).set({
+      status: "open",
+      handledBy: null,
+      handledAt: null,
+      finishedBy: null,
+      finishedAt: null,
+    }).where(eq(liveChatThreads.id, thread.id));
+  }
+  const inserted = await db.insert(liveChatMessages).values({
+    threadId: thread.id,
+    adminId,
+    senderType: "player",
+    senderPlayerId: playerId,
+    body,
+  });
+  await db.update(liveChatThreads).set({
+    lastMessageAt: now,
+    unreadForAdmin: sql`${liveChatThreads.unreadForAdmin} + 1`,
+    unreadForPlayer: 0,
+    ...(thread.status === "finished" ? { status: "open" as const } : {}),
+  }).where(eq(liveChatThreads.id, thread.id));
+  return { threadId: thread.id, messageId: inserted[0].insertId as number };
+}
+
+export async function sendLiveChatMessageAsAdmin(threadId: number, adminId: number, senderAdminId: number, body: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const thread = await getLiveChatThreadByIdForAdmin(threadId, adminId);
+  if (!thread) throw new Error("Chat thread not found");
+  if (thread.status === "finished") throw new Error("Chat thread is already finished");
+  const now = new Date();
+  const inserted = await db.insert(liveChatMessages).values({
+    threadId: thread.id,
+    adminId,
+    senderType: "admin",
+    senderAdminId,
+    body,
+  });
+  await db.update(liveChatThreads).set({
+    status: "handling",
+    handledBy: thread.handledBy || senderAdminId,
+    handledAt: thread.handledAt || now,
+    lastMessageAt: now,
+    unreadForPlayer: sql`${liveChatThreads.unreadForPlayer} + 1`,
+    unreadForAdmin: 0,
+  }).where(eq(liveChatThreads.id, thread.id));
+  return { threadId: thread.id, messageId: inserted[0].insertId as number };
+}
+
+export async function handleLiveChatThread(threadId: number, adminId: number, handlerAdminId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const thread = await getLiveChatThreadByIdForAdmin(threadId, adminId);
+  if (!thread) throw new Error("Chat thread not found");
+  if (thread.status === "finished") throw new Error("Chat thread is already finished");
+  await db.update(liveChatThreads).set({
+    status: "handling",
+    handledBy: handlerAdminId,
+    handledAt: new Date(),
+  }).where(eq(liveChatThreads.id, thread.id));
+  return { success: true };
+}
+
+export async function finishLiveChatThread(threadId: number, adminId: number, finisherAdminId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const thread = await getLiveChatThreadByIdForAdmin(threadId, adminId);
+  if (!thread) throw new Error("Chat thread not found");
+  await db.update(liveChatThreads).set({
+    status: "finished",
+    finishedBy: finisherAdminId,
+    finishedAt: new Date(),
+    unreadForAdmin: 0,
+  }).where(eq(liveChatThreads.id, thread.id));
+  return { success: true };
+}
+
+export async function markLiveChatReadByAdmin(threadId: number, adminId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(liveChatThreads).set({ unreadForAdmin: 0 }).where(and(eq(liveChatThreads.id, threadId), eq(liveChatThreads.adminId, adminId)));
+  return { success: true };
+}
+
+export async function markLiveChatReadByPlayer(threadId: number, playerId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(liveChatThreads).set({ unreadForPlayer: 0 }).where(and(eq(liveChatThreads.id, threadId), eq(liveChatThreads.playerId, playerId)));
+  return { success: true };
+}
+
+export async function countLiveChatPendingForAdmin(adminId: number): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const rows = await db
+    .select({ n: count() })
+    .from(liveChatThreads)
+    .where(and(eq(liveChatThreads.adminId, adminId), or(eq(liveChatThreads.status, "open"), sql`${liveChatThreads.unreadForAdmin} > 0` as any)));
+  return Number(rows[0]?.n || 0);
+}
+
+export async function countLiveChatUnreadForAdmin(adminId: number): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const rows = await db
+    .select({ n: sum(liveChatThreads.unreadForAdmin) })
+    .from(liveChatThreads)
+    .where(eq(liveChatThreads.adminId, adminId));
+  return Number(rows[0]?.n || 0);
+}
+
+export async function cleanupFinishedLiveChatsOlderThan(hours: number, batchSize = 200): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const cutoff = new Date(Date.now() - Math.max(1, hours) * 60 * 60 * 1000);
+  const oldThreads = await db
+    .select({ id: liveChatThreads.id })
+    .from(liveChatThreads)
+    .where(and(eq(liveChatThreads.status, "finished"), lt(liveChatThreads.finishedAt, cutoff) as any))
+    .orderBy(asc(liveChatThreads.finishedAt))
+    .limit(Math.max(1, Math.min(1000, batchSize)));
+  if (oldThreads.length === 0) return 0;
+  const ids = oldThreads.map((r) => r.id);
+  await db.delete(liveChatMessages).where(inArray(liveChatMessages.threadId, ids));
+  await db.delete(liveChatThreads).where(inArray(liveChatThreads.id, ids));
+  return ids.length;
 }
 
 // ─── System Settings ───
