@@ -55,6 +55,10 @@ const MAIN_MENU_DEDUPE_WINDOW_MS = 6_000;
 const latestMainMenuMessageIds = new Map<number, number>();
 // Serialize main menu rendering per chat to prevent duplicate messages.
 const mainMenuRenderQueue = new Map<number, Promise<void>>();
+// Short-window throttle + in-flight lock for callback actions.
+const recentCallbackActionAt = new Map<string, number>();
+const callbackActionsInFlight = new Set<string>();
+const CALLBACK_ACTION_THROTTLE_MS = 500;
 
 // Bot diagnostic info: Map<botId, DiagnosticInfo>
 interface BotDiagnosticInfo {
@@ -770,21 +774,55 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
     }
 
     console.log(`[${botLabel}] 🔘 Callback: "${data}" from ${telegramId}`);
-
-    try {
-      await bot.answerCallbackQuery(query.id);
-    } catch {}
-    const sourceMessageId = query.message?.message_id;
-    if (sourceMessageId) {
+    const actionKey = `${chatId}:${data}`;
+    const lastActionAt = recentCallbackActionAt.get(actionKey) || 0;
+    if (now - lastActionAt < CALLBACK_ACTION_THROTTLE_MS) {
+      console.log(
+        `[${botLabel}] ⏱️ Throttle callback in chat ${chatId} (data=${data}, delta=${now - lastActionAt}ms)`
+      );
       try {
-        await bot.deleteMessage(chatId, sourceMessageId);
-        untrackMessage(chatId, sourceMessageId);
+        await bot.answerCallbackQuery(query.id, {
+          text: "Please wait...",
+          show_alert: false,
+        });
       } catch {}
+      return;
+    }
+    if (callbackActionsInFlight.has(actionKey)) {
+      console.log(
+        `[${botLabel}] 🔒 Skip callback while in-flight in chat ${chatId} (data=${data})`
+      );
+      try {
+        await bot.answerCallbackQuery(query.id, {
+          text: "Processing...",
+          show_alert: false,
+        });
+      } catch {}
+      return;
+    }
+    recentCallbackActionAt.set(actionKey, now);
+    callbackActionsInFlight.add(actionKey);
+    if (recentCallbackActionAt.size > 10000) {
+      recentCallbackActionAt.forEach((at, key) => {
+        if (now - at > 10 * 60 * 1000) recentCallbackActionAt.delete(key);
+      });
     }
 
     try {
-      const render = async (text: string, options?: any) =>
-        upsertCallbackView(bot, query, chatId, text, options);
+      try {
+        await bot.answerCallbackQuery(query.id);
+      } catch {}
+      const sourceMessageId = query.message?.message_id;
+      if (sourceMessageId) {
+        try {
+          await bot.deleteMessage(chatId, sourceMessageId);
+          untrackMessage(chatId, sourceMessageId);
+        } catch {}
+      }
+
+      try {
+        const render = async (text: string, options?: any) =>
+          upsertCallbackView(bot, query, chatId, text, options);
 
       // ─── Register ───
       if (data.startsWith("register:")) {
@@ -1458,11 +1496,14 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         });
         return;
       }
-    } catch (err: any) {
-      console.error(`[${botLabel}] Error handling callback "${data}": ${err.message}`, err.stack);
-      try {
-        await sendAndTrack(bot, chatId, "❌ An error occurred. Please try again.");
-      } catch {}
+      } catch (err: any) {
+        console.error(`[${botLabel}] Error handling callback "${data}": ${err.message}`, err.stack);
+        try {
+          await sendAndTrack(bot, chatId, "❌ An error occurred. Please try again.");
+        } catch {}
+      }
+    } finally {
+      callbackActionsInFlight.delete(actionKey);
     }
   });
 
