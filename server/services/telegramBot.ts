@@ -399,14 +399,50 @@ function isLinkLike(raw: string): boolean {
   return !!normalizeSupportLink(raw);
 }
 
-function renderTextTemplate(template: string, vars: Record<string, string | number>) {
+function renderTextTemplate(
+  template: string,
+  vars: Record<string, string | number>,
+  options?: { parseLinks?: boolean }
+) {
   let out = String(template || "");
+  if (options?.parseLinks !== false) {
+    out = out.replace(/\{\{\s*Link\{([^{}]+)\}\{([^{}]+)\}\s*\}\}/gi, (_m, rawUrl, rawLabel) => {
+      const linkUrl = String(rawUrl || "").trim();
+      const linkLabel = String(rawLabel || "").trim();
+      const href = /^https?:\/\//i.test(linkUrl) ? linkUrl : `https://${linkUrl}`;
+      if (!linkUrl || !linkLabel) return "";
+      return `<a href="${href}">${linkLabel}</a>`;
+    });
+  }
   for (const [k, v] of Object.entries(vars)) {
     const value = String(v ?? "");
-    out = out.replace(new RegExp(`\\{\\{\\s*${k}\\s*\\}\\}`, "g"), value);
-    out = out.replace(new RegExp(`\\{${k}\\}`, "g"), value);
+    out = out.replace(new RegExp(`\\{\\{\\s*${k}\\s*\\}\\}`, "gi"), value);
+    out = out.replace(new RegExp(`\\{${k}\\}`, "gi"), value);
   }
   return out;
+}
+
+function getPlayerDisplayName(player: any): string {
+  return player.displayName || player.telegramFirstName || "Player";
+}
+
+function buildTemplateVars(params: {
+  player?: any;
+  botConfig?: any;
+  liveBalance?: number;
+  supportUrl?: string;
+}): Record<string, string | number> {
+  const player = params.player;
+  const liveBalance = Number(params.liveBalance ?? 0);
+  const botConfig = params.botConfig || {};
+  return {
+    Name: player ? getPlayerDisplayName(player) : "Player",
+    Balance: `$${liveBalance.toFixed(2)}`,
+    Contact: params.supportUrl || "",
+    botName: botConfig.botName || "TgGaming",
+    inviteCode: player?.inviteCode || "",
+    botUsername: botConfig.botUsername || "",
+  };
 }
 
 function normalizeMediaUrl(raw: string): string {
@@ -948,6 +984,15 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         await sendAndTrack(bot, chatId, "❌ Please register first using /start");
         return;
       }
+      const liveBalance = await getLiveBalance(player.id);
+      const rawSupportLink = await db.getSetting(adminId, "support_link");
+      const supportUrlFromSetting = normalizeSupportLink(rawSupportLink || "");
+      const tplVars = buildTemplateVars({
+        player,
+        botConfig,
+        liveBalance,
+        supportUrl: supportUrlFromSetting,
+      });
 
       // Main menu
       if (data === "main_menu") {
@@ -1030,6 +1075,9 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         if (msgGame?.body?.trim()) customDesc = msgGame.body.trim();
         const msgGameContinue = await getLocalizedBotSectionMessage(botConfig.id, lang, "game_continue");
         if (msgGameContinue?.title?.trim()) continueText = msgGameContinue.title.trim();
+        customTitle = renderTextTemplate(customTitle, tplVars);
+        customDesc = renderTextTemplate(customDesc, tplVars);
+        continueText = renderTextTemplate(continueText, tplVars, { parseLinks: false });
         const raw = (frontend as any)?.layoutInjections?.game?.dataJson;
         if (typeof raw === "string" && raw.trim()) {
           try {
@@ -1227,7 +1275,7 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         const bonuses = await db.getActiveBonusesByAdmin(adminId);
         const msgBonus = await getLocalizedBotSectionMessage(botConfig.id, lang, "bonus");
         if (bonuses.length === 0) {
-          await render(msgBonus?.body?.trim() || "🎁 No bonuses available.", {
+          await render(renderTextTemplate(msgBonus?.body?.trim() || "🎁 No bonuses available.", tplVars), {
             reply_markup: { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "main_menu" }]] },
           });
           return;
@@ -1243,7 +1291,10 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         buttons.push([{ text: "⬅️ Back", callback_data: "main_menu" }]);
 
         await render(
-          msgBonus?.title?.trim() || "🎁 <b>Available Bonuses</b>\n\nSelect a bonus to view details:",
+          renderTextTemplate(
+            msgBonus?.title?.trim() || "🎁 <b>Available Bonuses</b>\n\nSelect a bonus to view details:",
+            tplVars
+          ),
           {
           reply_markup: { inline_keyboard: buttons },
           }
@@ -1274,11 +1325,14 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         if (bonus.rolloverMultiplier) text += `🔄 Rollover: x${bonus.rolloverMultiplier}\n`;
         if (bonus.turnoverTarget) text += `📊 Turnover: x${parseFloat(bonus.turnoverTarget || "0").toFixed(2)}\n`;
         if (bonus.maxWithdraw) text += `💸 Max Withdraw: $${parseFloat(bonus.maxWithdraw || "0").toFixed(2)}\n`;
-        text += `\n${msgBonusDetail?.body?.trim() || "ℹ️ Claim is done on the frontend bonus page."}`;
+        text += `\n${renderTextTemplate(msgBonusDetail?.body?.trim() || "ℹ️ Claim is done on the frontend bonus page.", tplVars)}`;
 
         const rows: any[] = [];
         if (webLink) {
-          rows.push([{ text: msgBonusDetail?.title?.trim() || "🚀 Open Bonus Page", url: webLink }]);
+          rows.push([{
+            text: renderTextTemplate(msgBonusDetail?.title?.trim() || "🚀 Open Bonus Page", tplVars, { parseLinks: false }),
+            url: webLink,
+          }]);
         } else {
           rows.push([{ text: "⚠️ Frontend URL not configured", callback_data: "bonus" }]);
         }
@@ -1301,10 +1355,13 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         const lang = String(player.lang || "en").toLowerCase() === "zh" ? "zh" : "en";
         const msgSetting = await getLocalizedBotSectionMessage(botConfig.id, lang, "setting");
         await render(
-          msgSetting?.title?.trim() ||
-            (lang === "zh"
-              ? `⚙️ <b>设置</b>\n\n请选择语言：`
-              : `⚙️ <b>Settings</b>\n\nChoose your language:`),
+          renderTextTemplate(
+            msgSetting?.title?.trim() ||
+              (lang === "zh"
+                ? `⚙️ <b>设置</b>\n\n请选择语言：`
+                : `⚙️ <b>Settings</b>\n\nChoose your language:`),
+            tplVars
+          ),
           {
           reply_markup: {
             inline_keyboard: [
@@ -1326,13 +1383,9 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
           `🎮 Join me on ${botConfig.botName || "TgGaming"}!\n\n` +
           `Use my invite code: ${player.inviteCode}\n\n` +
           `https://t.me/${botConfig.botUsername}?start=${player.inviteCode}`;
-        const shareText = renderTextTemplate(msgShare?.body?.trim() || defaultShare, {
-          botName: botConfig.botName || "TgGaming",
-          inviteCode: player.inviteCode,
-          botUsername: botConfig.botUsername || "",
-        });
+        const shareText = renderTextTemplate(msgShare?.body?.trim() || defaultShare, tplVars);
         await render(shareText, {
-          reply_markup: { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "settings" }]] },
+          reply_markup: { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "main_menu" }]] },
         });
         return;
       }
@@ -1362,11 +1415,10 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
       if (data === "contact_us") {
         const lang = String(player.lang || "en").toLowerCase() === "zh" ? "zh" : "en";
         const msgContact = await getLocalizedBotSectionMessage(botConfig.id, lang, "contact");
-        const rawSupport = await db.getSetting(adminId, "support_link");
         const supportUrl =
           normalizeSupportLink(msgContact?.imageUrl || "") ||
           normalizeSupportLink(msgContact?.body || "") ||
-          normalizeSupportLink(rawSupport || "");
+          supportUrlFromSetting;
         if (!supportUrl) {
           await render(
             "❌ Support link is not configured yet. Please contact admin.",
@@ -1376,11 +1428,14 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
         }
         const contactButtonText =
           msgContact?.body?.trim() && !isLinkLike(msgContact.body)
-            ? msgContact.body.trim()
+            ? renderTextTemplate(msgContact.body.trim(), tplVars, { parseLinks: false })
             : "💬 Open Customer Service";
         await render(
-          msgContact?.title?.trim() ||
-            "📞 <b>Contact Us</b>\n\nNeed help? Tap below to contact customer service:",
+          renderTextTemplate(
+            msgContact?.title?.trim() ||
+              "📞 <b>Contact Us</b>\n\nNeed help? Tap below to contact customer service:",
+            { ...tplVars, Contact: supportUrl }
+          ),
           {
           reply_markup: {
             inline_keyboard: [
@@ -1614,12 +1669,23 @@ async function showMainMenu(
   botConfig: any,
   query?: TelegramBot.CallbackQuery
 ) {
-  const balance = (await getLiveBalance(player.id)).toFixed(2);
-
-  const text =
-    `🎮 <b>${botConfig.botName || "TgGaming"}</b>\n\n` +
-    `👤 ${player.displayName || player.telegramFirstName || "Player"}\n` +
-    `💰 Balance: $${balance}\n`;
+  const balanceValue = await getLiveBalance(player.id);
+  const balance = balanceValue.toFixed(2);
+  const lang = String(player.lang || "en").toLowerCase() === "zh" ? "zh" : "en";
+  const rawSupportLink = await db.getSetting(player.adminId || botConfig.adminId, "support_link");
+  const supportUrl = normalizeSupportLink(rawSupportLink || "");
+  const msgMain = await getLocalizedBotSectionMessage(botConfig.id, lang, "main");
+  const tplVars = buildTemplateVars({
+    player,
+    botConfig,
+    liveBalance: balanceValue,
+    supportUrl,
+  });
+  const defaultMainTitle = `🎮 <b>${botConfig.botName || "TgGaming"}</b>`;
+  const defaultMainBody = `👤 ${getPlayerDisplayName(player)}\n💰 Balance: $${balance}`;
+  const mainTitle = renderTextTemplate(msgMain?.title?.trim() || defaultMainTitle, tplVars);
+  const mainBody = renderTextTemplate(msgMain?.body?.trim() || defaultMainBody, tplVars);
+  const text = `${mainTitle}\n\n${mainBody}\n`;
 
   const keyboard: any[][] = [
     [

@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Settings, Globe, Bot, Users, Plus, Save, Trash2, Eye, Shield, Palette, Lock, Clock } from "lucide-react";
+import { Settings, Globe, Bot, Users, Plus, Save, Trash2, Eye, Shield, Palette, Lock, Clock, ChevronLeft, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 
 const MODULES = ["dashboard", "player", "deposit", "withdraw", "bonus", "bank", "setting", "telegram", "report", "banner", "subaccount", "log"];
@@ -22,6 +22,7 @@ const TG_LANG_OPTIONS = [
 ];
 const TG_MESSAGE_SECTIONS = [
   { key: "welcome", label: "Welcome" },
+  { key: "main", label: "Main Menu" },
   { key: "game", label: "Game" },
   { key: "bonus", label: "Bonus List" },
   { key: "bonus_detail", label: "Bonus Detail" },
@@ -30,6 +31,32 @@ const TG_MESSAGE_SECTIONS = [
   { key: "deposit", label: "Deposit" },
   { key: "withdraw", label: "Withdraw" },
   { key: "setting", label: "Settings" },
+] as const;
+type TgSectionKey = (typeof TG_MESSAGE_SECTIONS)[number]["key"];
+
+const TG_EDITOR_ITEMS = [
+  { key: "welcome", label: "Welcome", group: "main", kind: "normal" },
+  { key: "main", label: "Main Menu", group: "main", kind: "normal" },
+  { key: "game", label: "Game", group: "main", kind: "game" },
+  { key: "deposit", label: "Deposit", group: "wallet", kind: "normal" },
+  { key: "withdraw", label: "Withdraw", group: "wallet", kind: "normal" },
+  { key: "bonus_bundle", label: "Bonus", group: "bonus", kind: "bonus_bundle" },
+  { key: "share", label: "Share Invite", group: "bonus", kind: "normal" },
+  { key: "contact", label: "Contact Us", group: "support", kind: "normal" },
+  { key: "setting", label: "Settings", group: "support", kind: "normal" },
+] as const;
+
+const TG_EDITOR_GROUPS = [
+  { key: "main", label: "Main Flow" },
+  { key: "wallet", label: "Wallet" },
+  { key: "bonus", label: "Bonus & Share" },
+  { key: "support", label: "Support" },
+] as const;
+
+const TG_TEMPLATE_TOKENS = [
+  { label: "{{Name}}", value: "{{Name}}" },
+  { label: "{{Balance}}", value: "{{Balance}}" },
+  { label: "{{Contact}}", value: "{{Contact}}" },
 ] as const;
 
 function makeEmptyTelegramEditorState() {
@@ -307,6 +334,13 @@ function TelegramSettings({ accessToken, canEdit }: { accessToken: string; canEd
   const [messageEditor, setMessageEditor] = useState<Record<string, { title: string; body: string; imageUrl: string }>>(
     makeEmptyTelegramEditorState()
   );
+  const [editorGroup, setEditorGroup] = useState<(typeof TG_EDITOR_GROUPS)[number]["key"]>("main");
+  const [editorPage, setEditorPage] = useState(1);
+  const ITEMS_PER_PAGE = 2;
+  const [insertSection, setInsertSection] = useState<string>("welcome");
+  const [insertField, setInsertField] = useState<"title" | "body">("body");
+  const [linkTokenUrl, setLinkTokenUrl] = useState("");
+  const [linkTokenLabel, setLinkTokenLabel] = useState("");
 
   useEffect(() => {
     const bots = (botsQuery.data as any[]) || [];
@@ -346,6 +380,36 @@ function TelegramSettings({ accessToken, canEdit }: { accessToken: string; canEd
     }
     setMessageEditor(next);
   }, [botMessagesQuery.data, editorLang, selectedBotId]);
+
+  useEffect(() => {
+    setEditorPage(1);
+  }, [editorGroup]);
+
+  const updateSectionField = (section: string, field: "title" | "body" | "imageUrl", value: string) => {
+    setMessageEditor((prev) => ({
+      ...prev,
+      [section]: { ...(prev[section] || { title: "", body: "", imageUrl: "" }), [field]: value },
+    }));
+  };
+  const appendTokenToField = (token: string) => {
+    const current = messageEditor[insertSection]?.[insertField] || "";
+    const prefix = current && !current.endsWith(" ") && !current.endsWith("\n") ? " " : "";
+    updateSectionField(insertSection, insertField, `${current}${prefix}${token}`);
+  };
+  const appendLinkToken = () => {
+    if (!linkTokenUrl.trim() || !linkTokenLabel.trim()) {
+      toast.error("Please enter both link URL and link name");
+      return;
+    }
+    appendTokenToField(`{{Link{${linkTokenUrl.trim()}}{${linkTokenLabel.trim()}}}}`);
+    setLinkTokenUrl("");
+    setLinkTokenLabel("");
+  };
+
+  const groupedItems = TG_EDITOR_ITEMS.filter((item) => item.group === editorGroup);
+  const totalPages = Math.max(1, Math.ceil(groupedItems.length / ITEMS_PER_PAGE));
+  const safePage = Math.min(editorPage, totalPages);
+  const pageItems = groupedItems.slice((safePage - 1) * ITEMS_PER_PAGE, safePage * ITEMS_PER_PAGE);
 
   if (botsQuery.isLoading) return <Card><CardContent className="p-8 text-center text-muted-foreground">Loading bots...</CardContent></Card>;
 
@@ -469,77 +533,226 @@ function TelegramSettings({ accessToken, canEdit }: { accessToken: string; canEd
             </div>
           </div>
 
+          <div className="rounded-md border border-primary/25 bg-primary/5 p-3 space-y-3">
+            <div className="flex flex-col lg:flex-row lg:items-end gap-3">
+              <div className="space-y-1 min-w-40">
+                <Label className="text-xs">Insert Target Section</Label>
+                <Select value={insertSection} onValueChange={setInsertSection}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {[
+                      ...TG_MESSAGE_SECTIONS.map((s) => ({ key: s.key, label: s.label })),
+                      { key: "game_continue", label: "Game Continue" },
+                    ].map((s) => (
+                      <SelectItem key={s.key} value={s.key}>
+                        {s.label} ({s.key})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1 min-w-32">
+                <Label className="text-xs">Field</Label>
+                <Select value={insertField} onValueChange={(v) => setInsertField(v === "title" ? "title" : "body")}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="title">Title</SelectItem>
+                    <SelectItem value="body">Body</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="text-xs text-muted-foreground lg:pb-2">
+                Click tokens to append quickly into selected field.
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {TG_TEMPLATE_TOKENS.map((t) => (
+                <Button
+                  key={t.value}
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => appendTokenToField(t.value)}
+                  disabled={!canEdit}
+                >
+                  + {t.label}
+                </Button>
+              ))}
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-2">
+              <Input
+                value={linkTokenUrl}
+                onChange={(e) => setLinkTokenUrl(e.target.value)}
+                placeholder="https://example.com"
+                disabled={!canEdit}
+              />
+              <Input
+                value={linkTokenLabel}
+                onChange={(e) => setLinkTokenLabel(e.target.value)}
+                placeholder="Link label"
+                disabled={!canEdit}
+              />
+              <Button type="button" variant="outline" onClick={appendLinkToken} disabled={!canEdit}>
+                + {"{{Link{url}{name}}}"}
+              </Button>
+            </div>
+          </div>
+
           {!selectedBotId ? (
             <p className="text-sm text-muted-foreground">Please create/select a Telegram bot first.</p>
           ) : botMessagesQuery.isLoading ? (
             <p className="text-sm text-muted-foreground">Loading bot content...</p>
           ) : (
             <div className="space-y-4">
-              {TG_MESSAGE_SECTIONS.map((sec) => (
-                <div key={sec.key} className="rounded-md border border-white/10 p-3 space-y-2">
-                  <p className="text-sm font-medium">{sec.label} <span className="text-xs text-muted-foreground">({sec.key})</span></p>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    <div className="space-y-1">
-                      <Label className="text-xs">Title / Main Text</Label>
-                      <Textarea
-                        value={messageEditor[sec.key]?.title || ""}
-                        onChange={(e) =>
-                          setMessageEditor((prev) => ({
-                            ...prev,
-                            [sec.key]: { ...prev[sec.key], title: e.target.value },
-                          }))
-                        }
-                        placeholder="Main title/text shown to user"
-                        disabled={!canEdit}
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs">Body / Secondary Text</Label>
-                      <Textarea
-                        value={messageEditor[sec.key]?.body || ""}
-                        onChange={(e) =>
-                          setMessageEditor((prev) => ({
-                            ...prev,
-                            [sec.key]: { ...prev[sec.key], body: e.target.value },
-                          }))
-                        }
-                        placeholder="Secondary text or button text"
-                        disabled={!canEdit}
-                      />
-                    </div>
+              <div className="rounded-lg border border-white/10 bg-muted/20 p-3 space-y-3">
+                <Tabs value={editorGroup} onValueChange={(v) => setEditorGroup(v as (typeof TG_EDITOR_GROUPS)[number]["key"])}>
+                  <TabsList className="h-auto flex-wrap gap-1">
+                    {TG_EDITOR_GROUPS.map((g) => (
+                      <TabsTrigger key={g.key} value={g.key}>
+                        {g.label}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                </Tabs>
+                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                  <span>Page {safePage} / {totalPages}</span>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setEditorPage((p) => Math.max(1, p - 1))}
+                      disabled={safePage <= 1}
+                    >
+                      <ChevronLeft className="w-4 h-4 mr-1" /> Prev
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setEditorPage((p) => Math.min(totalPages, p + 1))}
+                      disabled={safePage >= totalPages}
+                    >
+                      Next <ChevronRight className="w-4 h-4 ml-1" />
+                    </Button>
                   </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs">Image URL / Link (optional)</Label>
-                    <Input
-                      value={messageEditor[sec.key]?.imageUrl || ""}
-                      onChange={(e) =>
-                        setMessageEditor((prev) => ({
-                          ...prev,
-                          [sec.key]: { ...prev[sec.key], imageUrl: e.target.value },
-                        }))
-                      }
-                      placeholder={sec.key === "contact" ? "https://t.me/your_support (Contact link)" : "https://..."}
-                      disabled={!canEdit}
-                    />
-                  </div>
-                  {sec.key === "game" && (
-                    <div className="space-y-1">
-                      <Label className="text-xs">Continue Button Text (Game Continue)</Label>
-                      <Input
-                        value={messageEditor["game_continue"]?.title || ""}
-                        onChange={(e) =>
-                          setMessageEditor((prev) => ({
-                            ...prev,
-                            game_continue: { ...(prev.game_continue || { title: "", body: "", imageUrl: "" }), title: e.target.value },
-                          }))
-                        }
-                        placeholder="e.g. 🚀 Continue & Login"
-                        disabled={!canEdit}
-                      />
-                    </div>
-                  )}
                 </div>
-              ))}
+              </div>
+
+              {pageItems.map((item) => {
+                if (item.kind === "bonus_bundle") {
+                  return (
+                    <div key={item.key} className="rounded-md border border-white/10 bg-card/60 p-4 space-y-4">
+                      <p className="text-sm font-semibold">
+                        🎁 Bonus Content
+                        <span className="ml-2 text-xs text-muted-foreground">(bonus + bonus_detail)</span>
+                      </p>
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        <div className="space-y-2 rounded-md border border-white/10 p-3">
+                          <p className="text-xs font-medium text-muted-foreground">Bonus List (bonus)</p>
+                          <Label className="text-xs">Title / Main Text</Label>
+                          <Textarea
+                            value={messageEditor["bonus"]?.title || ""}
+                            onChange={(e) => updateSectionField("bonus", "title", e.target.value)}
+                            placeholder="Bonus list title shown in Telegram"
+                            disabled={!canEdit}
+                          />
+                          <Label className="text-xs">Body / Secondary Text</Label>
+                          <Textarea
+                            value={messageEditor["bonus"]?.body || ""}
+                            onChange={(e) => updateSectionField("bonus", "body", e.target.value)}
+                            placeholder="Optional list description"
+                            disabled={!canEdit}
+                          />
+                          <Label className="text-xs">Image URL (optional)</Label>
+                          <Input
+                            value={messageEditor["bonus"]?.imageUrl || ""}
+                            onChange={(e) => updateSectionField("bonus", "imageUrl", e.target.value)}
+                            placeholder="https://..."
+                            disabled={!canEdit}
+                          />
+                        </div>
+                        <div className="space-y-2 rounded-md border border-white/10 p-3">
+                          <p className="text-xs font-medium text-muted-foreground">Bonus Detail (bonus_detail)</p>
+                          <Label className="text-xs">Open Button Text</Label>
+                          <Input
+                            value={messageEditor["bonus_detail"]?.title || ""}
+                            onChange={(e) => updateSectionField("bonus_detail", "title", e.target.value)}
+                            placeholder="e.g. 🚀 Open Bonus Page"
+                            disabled={!canEdit}
+                          />
+                          <Label className="text-xs">Detail Hint Text</Label>
+                          <Textarea
+                            value={messageEditor["bonus_detail"]?.body || ""}
+                            onChange={(e) => updateSectionField("bonus_detail", "body", e.target.value)}
+                            placeholder="Hint shown in bonus detail message"
+                            disabled={!canEdit}
+                          />
+                          <Label className="text-xs">Image URL (optional)</Label>
+                          <Input
+                            value={messageEditor["bonus_detail"]?.imageUrl || ""}
+                            onChange={(e) => updateSectionField("bonus_detail", "imageUrl", e.target.value)}
+                            placeholder="https://..."
+                            disabled={!canEdit}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
+                const sectionKey = item.key as TgSectionKey;
+                return (
+                  <div key={item.key} className="rounded-md border border-white/10 bg-card/60 p-4 space-y-3">
+                    <p className="text-sm font-semibold">
+                      {item.label}
+                      <span className="ml-2 text-xs text-muted-foreground">({sectionKey})</span>
+                    </p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Label className="text-xs">Title / Main Text</Label>
+                        <Textarea
+                          value={messageEditor[sectionKey]?.title || ""}
+                          onChange={(e) => updateSectionField(sectionKey, "title", e.target.value)}
+                          placeholder="Main title/text shown to user"
+                          disabled={!canEdit}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Body / Secondary Text</Label>
+                        <Textarea
+                          value={messageEditor[sectionKey]?.body || ""}
+                          onChange={(e) => updateSectionField(sectionKey, "body", e.target.value)}
+                          placeholder="Secondary text or button text"
+                          disabled={!canEdit}
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Image URL / Link (optional)</Label>
+                      <Input
+                        value={messageEditor[sectionKey]?.imageUrl || ""}
+                        onChange={(e) => updateSectionField(sectionKey, "imageUrl", e.target.value)}
+                        placeholder={sectionKey === "contact" ? "https://t.me/your_support (Contact link)" : "https://..."}
+                        disabled={!canEdit}
+                      />
+                    </div>
+                    {sectionKey === "game" && (
+                      <div className="space-y-1 rounded-md border border-white/10 bg-muted/20 p-3">
+                        <Label className="text-xs">Continue Button Text (game_continue)</Label>
+                        <Input
+                          value={messageEditor["game_continue"]?.title || ""}
+                          onChange={(e) => updateSectionField("game_continue", "title", e.target.value)}
+                          placeholder="e.g. 🚀 Continue & Login"
+                          disabled={!canEdit}
+                        />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
 
               {canEdit && (
                 <div className="flex justify-end">
