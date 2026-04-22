@@ -9,7 +9,7 @@ import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { initWebSocket } from "../services/websocket";
 import { storagePut } from "../storage";
-import { startAllBots } from "../services/telegramBot";
+import { startAllBots, isTelegramPollingEnabled } from "../services/telegramBot";
 import { nanoid } from "nanoid";
 import multer from "multer";
 import { verifyAccessToken, refreshAccessToken } from "../services/auth";
@@ -329,9 +329,13 @@ async function startServer() {
     console.log(`Server running on http://localhost:${port}/`);
 
     // Start all active Telegram bots
-    startAllBots().catch(err => {
-      console.error("[TG Bot] Failed to start bots:", err);
-    });
+    if (isTelegramPollingEnabled()) {
+      startAllBots().catch(err => {
+        console.error("[TG Bot] Failed to start bots:", err);
+      });
+    } else {
+      console.log("[TG Bot] Polling disabled in this environment.");
+    }
   });
 }
 

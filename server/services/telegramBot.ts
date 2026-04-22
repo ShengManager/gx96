@@ -66,6 +66,14 @@ const recentChatCallbackAt = new Map<number, number>();
 const CHAT_CALLBACK_THROTTLE_MS = 500;
 let warnedTelegramChatViewsUnavailable = false;
 
+export function isTelegramPollingEnabled(): boolean {
+  const raw = String(process.env.TG_BOT_POLLING_ENABLED || "").trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+  // Safe default: disable local dev polling unless explicitly enabled.
+  return process.env.NODE_ENV === "production";
+}
+
 // Bot diagnostic info: Map<botId, DiagnosticInfo>
 interface BotDiagnosticInfo {
   botId: number;
@@ -118,6 +126,10 @@ function resetBackoff(botId: number) {
 // ─── Bot Lifecycle ───
 
 export async function startAllBots() {
+  if (!isTelegramPollingEnabled()) {
+    console.log("[TG Bot] Polling disabled by env. Skip starting bots.");
+    return;
+  }
   const database = await getDb();
   if (!database) return;
 
@@ -139,6 +151,10 @@ export async function startAllBots() {
 }
 
 export async function startBot(botConfig: any): Promise<boolean> {
+  if (!isTelegramPollingEnabled()) {
+    console.log(`[TG Bot] Polling disabled by env, skip start for bot ${botConfig?.id || "unknown"}.`);
+    return false;
+  }
   if (activeBots.has(botConfig.id)) {
     // Stop existing instance first
     await stopBot(botConfig.id);
