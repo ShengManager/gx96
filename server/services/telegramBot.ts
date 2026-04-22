@@ -1639,15 +1639,19 @@ async function showMainMenu(
 
   const sig = `${text}\n${JSON.stringify(keyboard)}`;
   const now = Date.now();
-  const last = recentMainMenuRenders.get(chatId);
-  if (last && last.sig === sig && now - last.at < MAIN_MENU_DEDUPE_WINDOW_MS) {
-    return;
-  }
-  recentMainMenuRenders.set(chatId, { sig, at: now });
-  if (recentMainMenuRenders.size > 5000) {
-    recentMainMenuRenders.forEach((rec, cid) => {
-      if (now - rec.at > 10 * 60 * 1000) recentMainMenuRenders.delete(cid);
-    });
+  // For callback-triggered navigation (e.g. Back), always render immediately.
+  // Dedupe is kept only for non-callback entries like repeated /start deliveries.
+  if (!query) {
+    const last = recentMainMenuRenders.get(chatId);
+    if (last && last.sig === sig && now - last.at < MAIN_MENU_DEDUPE_WINDOW_MS) {
+      return;
+    }
+    recentMainMenuRenders.set(chatId, { sig, at: now });
+    if (recentMainMenuRenders.size > 5000) {
+      recentMainMenuRenders.forEach((rec, cid) => {
+        if (now - rec.at > 10 * 60 * 1000) recentMainMenuRenders.delete(cid);
+      });
+    }
   }
 
   const prevMainId = latestMainMenuMessageIds.get(chatId);
