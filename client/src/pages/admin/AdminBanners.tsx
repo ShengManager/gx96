@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ImageUrlField } from "@/components/admin/ImageUrlField";
 import { Plus, Edit, Trash2, Image } from "lucide-react";
 import { toast } from "sonner";
 
@@ -84,17 +85,17 @@ export default function AdminBanners() {
       </div>
 
       <BannerFormDialog open={showForm} onOpenChange={setShowForm} title="Add Banner"
-        onSubmit={(d) => createMutation.mutate({ token: accessToken!, ...d })} />
+        onSubmit={(d) => createMutation.mutate({ token: accessToken!, ...d })} accessToken={accessToken!} />
       {editing && (
         <BannerFormDialog open={!!editing} onOpenChange={(o) => { if (!o) setEditing(null); }} title="Edit Banner" initialData={editing}
-          onSubmit={(d) => updateMutation.mutate({ token: accessToken!, bannerId: editing.id, ...d })} />
+          onSubmit={(d) => updateMutation.mutate({ token: accessToken!, bannerId: editing.id, ...d })} accessToken={accessToken!} />
       )}
     </div>
   );
 }
 
-function BannerFormDialog({ open, onOpenChange, onSubmit, title, initialData }: {
-  open: boolean; onOpenChange: (o: boolean) => void; onSubmit: (d: any) => void; title: string; initialData?: any;
+function BannerFormDialog({ open, onOpenChange, onSubmit, title, initialData, accessToken }: {
+  open: boolean; onOpenChange: (o: boolean) => void; onSubmit: (d: any) => void; title: string; initialData?: any; accessToken: string;
 }) {
   const [form, setForm] = useState({
     title: initialData?.title || "",
@@ -110,7 +111,15 @@ function BannerFormDialog({ open, onOpenChange, onSubmit, title, initialData }: 
         <DialogHeader><DialogTitle>{title}</DialogTitle></DialogHeader>
         <div className="space-y-4">
           <div className="space-y-2"><Label>Title</Label><Input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} /></div>
-          <div className="space-y-2"><Label>Image URL</Label><Input value={form.imageUrl} onChange={e => setForm(f => ({ ...f, imageUrl: e.target.value }))} placeholder="https://..." /></div>
+          <div className="space-y-2">
+            <Label>Image URL</Label>
+            <ImageUrlField
+              accessToken={accessToken}
+              value={form.imageUrl}
+              onChange={(next) => setForm((f) => ({ ...f, imageUrl: next }))}
+              placeholder="https://..."
+            />
+          </div>
           <div className="space-y-2"><Label>Link URL (optional)</Label><Input value={form.linkUrl} onChange={e => setForm(f => ({ ...f, linkUrl: e.target.value }))} /></div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-2"><Label>Sort Order</Label><Input type="number" value={form.sortOrder} onChange={e => setForm(f => ({ ...f, sortOrder: parseInt(e.target.value) || 0 }))} /></div>

@@ -1881,6 +1881,7 @@ async function showMainMenu(
       const mainTitle = renderTextTemplate(msgMain?.title?.trim() || defaultMainTitle, tplVars);
       const mainBody = renderTextTemplate(msgMain?.body?.trim() || defaultMainBody, tplVars);
       const text = `${mainTitle}\n\n${mainBody}\n`;
+      const mainImageUrl = normalizeMediaUrl(msgMain?.imageUrl || "");
 
       const keyboard: any[][] = [
         [
@@ -1931,9 +1932,25 @@ async function showMainMenu(
         } catch {}
       }
 
-      const sent = await sendAndTrack(bot, chatId, text, {
-        reply_markup: { inline_keyboard: keyboard },
-      });
+      let sent: TelegramBot.Message;
+      if (mainImageUrl) {
+        try {
+          sent = await bot.sendPhoto(chatId, mainImageUrl, {
+            caption: text,
+            parse_mode: "HTML",
+            reply_markup: { inline_keyboard: keyboard },
+          } as any);
+          trackMessage(chatId, sent.message_id);
+        } catch {
+          sent = await sendAndTrack(bot, chatId, text, {
+            reply_markup: { inline_keyboard: keyboard },
+          });
+        }
+      } else {
+        sent = await sendAndTrack(bot, chatId, text, {
+          reply_markup: { inline_keyboard: keyboard },
+        });
+      }
       latestMainMenuMessageIds.set(chatId, sent.message_id);
       await savePersistedViewMessageId(botConfig.id, chatId, ACTIVE_VIEW_KEY, sent.message_id);
     });

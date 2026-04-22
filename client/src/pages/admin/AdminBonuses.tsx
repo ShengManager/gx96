@@ -10,6 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { ImageUrlField } from "@/components/admin/ImageUrlField";
 import { FolderPlus, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { AdminBonusDraggableList } from "./AdminBonusDraggableList";
@@ -519,6 +520,7 @@ export default function AdminBonuses() {
               ...payload,
             });
           }}
+          accessToken={accessToken!}
           loading={updatePromoGroupMutation.isPending}
         />
       )}
@@ -530,6 +532,7 @@ export default function AdminBonuses() {
           onSave={(payload) => {
             createPromoGroupMutation.mutate({ token: accessToken!, ...payload });
           }}
+          accessToken={accessToken!}
           loading={createPromoGroupMutation.isPending}
         />
       )}
@@ -541,6 +544,7 @@ export default function AdminBonuses() {
         onSubmit={(data) => createMutation.mutate({ token: accessToken!, ...data })}
         title="Create Bonus"
         groupKeyOptions={groupKeyOptions}
+        accessToken={accessToken!}
       />
 
       {/* Edit Dialog */}
@@ -552,6 +556,7 @@ export default function AdminBonuses() {
           title="Edit Bonus"
           initialData={editingBonus}
           groupKeyOptions={groupKeyOptions}
+          accessToken={accessToken!}
         />
       )}
     </div>
@@ -565,6 +570,7 @@ function PromoGroupEditDialog({
   initialTitle,
   initialBannerUrl,
   onSave,
+  accessToken,
   loading,
 }: {
   open: boolean;
@@ -576,6 +582,7 @@ function PromoGroupEditDialog({
     promoGroupTitle: string | null;
     promoGroupBannerUrl: string | null;
   }) => void;
+  accessToken: string;
   loading: boolean;
 }) {
   const [title, setTitle] = useState(initialTitle);
@@ -606,7 +613,12 @@ function PromoGroupEditDialog({
           </div>
           <div className="space-y-2">
             <Label>Banner image URL</Label>
-            <Input value={bannerUrl} onChange={(e) => setBannerUrl(e.target.value)} placeholder="https://..." />
+            <ImageUrlField
+              accessToken={accessToken}
+              value={bannerUrl}
+              onChange={setBannerUrl}
+              placeholder="https://..."
+            />
           </div>
         </div>
         <div className="flex justify-end gap-2 pt-2">
@@ -635,11 +647,13 @@ function CreatePromoGroupDialog({
   open,
   onOpenChange,
   onSave,
+  accessToken,
   loading,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSave: (payload: { groupKey: string; title: string | null; bannerUrl: string | null }) => void;
+  accessToken: string;
   loading: boolean;
 }) {
   const [groupKey, setGroupKey] = useState("");
@@ -679,7 +693,12 @@ function CreatePromoGroupDialog({
           </div>
           <div className="space-y-2">
             <Label>Banner URL (optional)</Label>
-            <Input value={bannerUrl} onChange={(e) => setBannerUrl(e.target.value)} placeholder="https://..." />
+            <ImageUrlField
+              accessToken={accessToken}
+              value={bannerUrl}
+              onChange={setBannerUrl}
+              placeholder="https://..."
+            />
           </div>
         </div>
         <div className="flex justify-end gap-2 pt-2">
@@ -705,10 +724,11 @@ function CreatePromoGroupDialog({
   );
 }
 
-function BonusFormDialog({ open, onOpenChange, onSubmit, title, initialData, groupKeyOptions = [] }: {
+function BonusFormDialog({ open, onOpenChange, onSubmit, title, initialData, groupKeyOptions = [], accessToken }: {
   open: boolean; onOpenChange: (open: boolean) => void;
   onSubmit: (data: any) => void; title: string; initialData?: any;
   groupKeyOptions?: string[];
+  accessToken: string;
 }) {
   const toInputDatetime = (value?: string | null) => {
     if (!value) return "";
@@ -1044,11 +1064,21 @@ function BonusFormDialog({ open, onOpenChange, onSubmit, title, initialData, gro
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div className="space-y-2">
                     <Label>Card Image URL</Label>
-                    <Input value={form.cardImageUrl} onChange={e => setForm(f => ({ ...f, cardImageUrl: e.target.value }))} placeholder="https://..." />
+                    <ImageUrlField
+                      accessToken={accessToken}
+                      value={form.cardImageUrl}
+                      onChange={(next) => setForm((f) => ({ ...f, cardImageUrl: next }))}
+                      placeholder="https://..."
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label>Detail Image URL</Label>
-                    <Input value={form.detailImageUrl} onChange={e => setForm(f => ({ ...f, detailImageUrl: e.target.value }))} placeholder="https://..." />
+                    <ImageUrlField
+                      accessToken={accessToken}
+                      value={form.detailImageUrl}
+                      onChange={(next) => setForm((f) => ({ ...f, detailImageUrl: next }))}
+                      placeholder="https://..."
+                    />
                   </div>
                 </div>
                 <div className="flex items-center gap-2">

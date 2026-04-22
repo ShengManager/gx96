@@ -12,6 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { ImageUrlField } from "@/components/admin/ImageUrlField";
 import { Settings, Globe, Bot, Users, Plus, Save, Trash2, Eye, Shield, Palette, Lock, Clock, ChevronLeft, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 
@@ -667,9 +668,10 @@ function TelegramSettings({ accessToken, canEdit }: { accessToken: string; canEd
                             disabled={!canEdit}
                           />
                           <Label className="text-xs">Image URL (optional)</Label>
-                          <Input
+                          <ImageUrlField
+                            accessToken={accessToken}
                             value={messageEditor["bonus"]?.imageUrl || ""}
-                            onChange={(e) => updateSectionField("bonus", "imageUrl", e.target.value)}
+                            onChange={(next) => updateSectionField("bonus", "imageUrl", next)}
                             placeholder="https://..."
                             disabled={!canEdit}
                           />
@@ -691,9 +693,10 @@ function TelegramSettings({ accessToken, canEdit }: { accessToken: string; canEd
                             disabled={!canEdit}
                           />
                           <Label className="text-xs">Image URL (optional)</Label>
-                          <Input
+                          <ImageUrlField
+                            accessToken={accessToken}
                             value={messageEditor["bonus_detail"]?.imageUrl || ""}
-                            onChange={(e) => updateSectionField("bonus_detail", "imageUrl", e.target.value)}
+                            onChange={(next) => updateSectionField("bonus_detail", "imageUrl", next)}
                             placeholder="https://..."
                             disabled={!canEdit}
                           />
@@ -732,9 +735,10 @@ function TelegramSettings({ accessToken, canEdit }: { accessToken: string; canEd
                     </div>
                     <div className="space-y-1">
                       <Label className="text-xs">Image URL / Link (optional)</Label>
-                      <Input
+                      <ImageUrlField
+                        accessToken={accessToken}
                         value={messageEditor[sectionKey]?.imageUrl || ""}
-                        onChange={(e) => updateSectionField(sectionKey, "imageUrl", e.target.value)}
+                        onChange={(next) => updateSectionField(sectionKey, "imageUrl", next)}
                         placeholder={sectionKey === "contact" ? "https://t.me/your_support (Contact link)" : "https://..."}
                         disabled={!canEdit}
                       />
@@ -1071,11 +1075,23 @@ function FrontendSettingsTab({ accessToken, canEdit }: { accessToken: string; ca
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label>Logo URL</Label>
-              <Input value={form.logoUrl} onChange={e => setForm(f => ({ ...f, logoUrl: e.target.value }))} placeholder="https://..." disabled={!canEdit} />
+              <ImageUrlField
+                accessToken={accessToken}
+                value={form.logoUrl}
+                onChange={(next) => setForm((f) => ({ ...f, logoUrl: next }))}
+                placeholder="https://..."
+                disabled={!canEdit}
+              />
             </div>
             <div className="space-y-2">
               <Label>Favicon URL</Label>
-              <Input value={form.faviconUrl} onChange={e => setForm(f => ({ ...f, faviconUrl: e.target.value }))} placeholder="https://..." disabled={!canEdit} />
+              <ImageUrlField
+                accessToken={accessToken}
+                value={form.faviconUrl}
+                onChange={(next) => setForm((f) => ({ ...f, faviconUrl: next }))}
+                placeholder="https://..."
+                disabled={!canEdit}
+              />
             </div>
           </div>
         </CardContent>

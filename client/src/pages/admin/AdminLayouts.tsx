@@ -6,6 +6,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { ImageUrlField } from "@/components/admin/ImageUrlField";
 import { Palette, Save } from "lucide-react";
 import { toast } from "sonner";
 import CodeMirror from "@uiw/react-codemirror";
@@ -208,18 +209,20 @@ export default function AdminLayouts() {
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label>Logo URL</Label>
-              <Input
+              <ImageUrlField
+                accessToken={accessToken || ""}
                 value={form.logoUrl}
-                onChange={(e) => setForm((f) => ({ ...f, logoUrl: e.target.value }))}
+                onChange={(next) => setForm((f) => ({ ...f, logoUrl: next }))}
                 placeholder="https://..."
                 disabled={!canEdit}
               />
             </div>
             <div className="space-y-2">
               <Label>Favicon URL</Label>
-              <Input
+              <ImageUrlField
+                accessToken={accessToken || ""}
                 value={form.faviconUrl}
-                onChange={(e) => setForm((f) => ({ ...f, faviconUrl: e.target.value }))}
+                onChange={(next) => setForm((f) => ({ ...f, faviconUrl: next }))}
                 placeholder="https://..."
                 disabled={!canEdit}
               />
