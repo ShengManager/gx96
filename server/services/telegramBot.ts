@@ -51,6 +51,8 @@ const START_DEDUPE_WINDOW_MS = 10_000;
 const CALLBACK_DEDUPE_WINDOW_MS = 8_000;
 const recentMainMenuRenders = new Map<number, { sig: string; at: number }>();
 const MAIN_MENU_DEDUPE_WINDOW_MS = 6_000;
+// Remember latest main menu message per chat to replace it reliably.
+const latestMainMenuMessageIds = new Map<number, number>();
 
 // Bot diagnostic info: Map<botId, DiagnosticInfo>
 interface BotDiagnosticInfo {
@@ -259,12 +261,20 @@ function trackMessage(chatId: number, messageId: number) {
   chatMessages.set(chatId, msgs);
 }
 
+function untrackMessage(chatId: number, messageId: number) {
+  const msgs = chatMessages.get(chatId) || [];
+  if (msgs.length === 0) return;
+  const next = msgs.filter((id) => id !== messageId);
+  chatMessages.set(chatId, next);
+}
+
 async function cleanupMessages(bot: TelegramBot, chatId: number, keepLast = 1) {
   const msgs = chatMessages.get(chatId) || [];
   const toDelete = keepLast <= 0 ? [...msgs] : msgs.slice(0, -keepLast);
   for (const msgId of toDelete) {
     try {
       await bot.deleteMessage(chatId, msgId);
+      untrackMessage(chatId, msgId);
     } catch {}
   }
   chatMessages.set(chatId, keepLast <= 0 ? [] : msgs.slice(-keepLast));
@@ -291,39 +301,7 @@ async function upsertCallbackView(
   text: string,
   options?: any
 ): Promise<void> {
-  // Telegram editMessageText only supports inline keyboard.
-  // If caller needs a reply keyboard (e.g. request_contact), we must send a new message.
-  if (options?.reply_markup?.keyboard) {
-    await sendAndTrack(bot, chatId, text, options);
-    return;
-  }
-
-  const messageId = query.message?.message_id;
-  if (messageId) {
-    try {
-      await bot.editMessageText(text, {
-        chat_id: chatId,
-        message_id: messageId,
-        parse_mode: "HTML",
-        ...options,
-      } as any);
-      return;
-    } catch (err: any) {
-      const msg = String(err?.message || "");
-      // If another handler already edited to the same content, do NOT send a duplicate.
-      if (msg.includes("message is not modified")) return;
-      // Fallback to sending a new message only when edit is impossible.
-      if (
-        msg.includes("message can't be edited") ||
-        msg.includes("message to edit not found") ||
-        msg.includes("there is no text in the message to edit")
-      ) {
-        // Continue to fallback below.
-      } else {
-        throw err;
-      }
-    }
-  }
+  // Unified UX: never edit callback message, always send a fresh one after old message is removed.
   await sendAndTrack(bot, chatId, text, options);
 }
 
@@ -340,38 +318,7 @@ async function upsertCallbackPhotoView(
     await upsertCallbackView(bot, query, chatId, caption, options);
     return;
   }
-  const messageId = query.message?.message_id;
-  if (messageId) {
-    try {
-      await bot.editMessageMedia(
-        {
-          type: "photo",
-          media: mediaUrl,
-          caption,
-          parse_mode: "HTML",
-        } as any,
-        {
-          chat_id: chatId,
-          message_id: messageId,
-          reply_markup: options?.reply_markup,
-        } as any
-      );
-      return;
-    } catch (err: any) {
-      const msg = String(err?.message || "");
-      if (msg.includes("message is not modified")) return;
-      if (
-        msg.includes("message can't be edited") ||
-        msg.includes("message to edit not found") ||
-        msg.includes("there is no photo") ||
-        msg.includes("can't parse")
-      ) {
-        // fallback below
-      } else {
-        throw err;
-      }
-    }
-  }
+  // Unified UX: never edit callback message, always send a fresh one after old message is removed.
   const sent = await bot.sendPhoto(chatId, mediaUrl, {
     caption,
     parse_mode: "HTML",
@@ -789,6 +736,13 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
     try {
       await bot.answerCallbackQuery(query.id);
     } catch {}
+    const sourceMessageId = query.message?.message_id;
+    if (sourceMessageId) {
+      try {
+        await bot.deleteMessage(chatId, sourceMessageId);
+        untrackMessage(chatId, sourceMessageId);
+      } catch {}
+    }
 
     try {
       const render = async (text: string, options?: any) =>
@@ -1696,15 +1650,25 @@ async function showMainMenu(
     });
   }
 
-  if (query) {
-    await upsertCallbackView(bot, query, chatId, text, {
-      reply_markup: { inline_keyboard: keyboard },
-    });
-    return;
+  const prevMainId = latestMainMenuMessageIds.get(chatId);
+  if (prevMainId) {
+    try {
+      await bot.deleteMessage(chatId, prevMainId);
+      untrackMessage(chatId, prevMainId);
+    } catch {}
   }
-  await sendAndTrack(bot, chatId, text, {
+
+  if (query?.message?.message_id && query.message.message_id !== prevMainId) {
+    try {
+      await bot.deleteMessage(chatId, query.message.message_id);
+      untrackMessage(chatId, query.message.message_id);
+    } catch {}
+  }
+
+  const sent = await sendAndTrack(bot, chatId, text, {
     reply_markup: { inline_keyboard: keyboard },
   });
+  latestMainMenuMessageIds.set(chatId, sent.message_id);
 }
 
 // ─── Pending state maps ───
