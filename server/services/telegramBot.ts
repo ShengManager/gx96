@@ -53,6 +53,8 @@ const recentMainMenuRenders = new Map<number, { sig: string; at: number }>();
 const MAIN_MENU_DEDUPE_WINDOW_MS = 6_000;
 // Remember latest main menu message per chat to replace it reliably.
 const latestMainMenuMessageIds = new Map<number, number>();
+// Serialize main menu rendering per chat to prevent duplicate messages.
+const mainMenuRenderQueue = new Map<number, Promise<void>>();
 
 // Bot diagnostic info: Map<botId, DiagnosticInfo>
 interface BotDiagnosticInfo {
@@ -1669,76 +1671,90 @@ async function showMainMenu(
   botConfig: any,
   query?: TelegramBot.CallbackQuery
 ) {
-  const balanceValue = await getLiveBalance(player.id);
-  const balance = balanceValue.toFixed(2);
-  const lang = String(player.lang || "en").toLowerCase() === "zh" ? "zh" : "en";
-  const rawSupportLink = await db.getSetting(player.adminId || botConfig.adminId, "support_link");
-  const supportUrl = normalizeSupportLink(rawSupportLink || "");
-  const msgMain = await getLocalizedBotSectionMessage(botConfig.id, lang, "main");
-  const tplVars = buildTemplateVars({
-    player,
-    botConfig,
-    liveBalance: balanceValue,
-    supportUrl,
-  });
-  const defaultMainTitle = `🎮 <b>${botConfig.botName || "TgGaming"}</b>`;
-  const defaultMainBody = `👤 ${getPlayerDisplayName(player)}\n💰 Balance: $${balance}`;
-  const mainTitle = renderTextTemplate(msgMain?.title?.trim() || defaultMainTitle, tplVars);
-  const mainBody = renderTextTemplate(msgMain?.body?.trim() || defaultMainBody, tplVars);
-  const text = `${mainTitle}\n\n${mainBody}\n`;
-
-  const keyboard: any[][] = [
-    [
-      { text: "💰 Deposit", callback_data: "deposit" },
-      { text: "💸 Withdraw", callback_data: "withdraw" },
-    ],
-    [
-      { text: "🎮 Games", callback_data: "games" },
-      { text: "🎁 Bonus", callback_data: "bonus" },
-    ],
-    [
-      { text: "📨 Share", callback_data: "share_invite" },
-      { text: "📞 Contact Us", callback_data: "contact_us" },
-    ],
-    [{ text: "⚙️ Settings", callback_data: "settings" }],
-  ];
-
-  const sig = `${text}\n${JSON.stringify(keyboard)}`;
-  const now = Date.now();
-  // For callback-triggered navigation (e.g. Back), always render immediately.
-  // Dedupe is kept only for non-callback entries like repeated /start deliveries.
-  if (!query) {
-    const last = recentMainMenuRenders.get(chatId);
-    if (last && last.sig === sig && now - last.at < MAIN_MENU_DEDUPE_WINDOW_MS) {
-      return;
-    }
-    recentMainMenuRenders.set(chatId, { sig, at: now });
-    if (recentMainMenuRenders.size > 5000) {
-      recentMainMenuRenders.forEach((rec, cid) => {
-        if (now - rec.at > 10 * 60 * 1000) recentMainMenuRenders.delete(cid);
+  const previousTask = mainMenuRenderQueue.get(chatId) || Promise.resolve();
+  const currentTask = previousTask
+    .catch(() => {})
+    .then(async () => {
+      const balanceValue = await getLiveBalance(player.id);
+      const balance = balanceValue.toFixed(2);
+      const lang = String(player.lang || "en").toLowerCase() === "zh" ? "zh" : "en";
+      const rawSupportLink = await db.getSetting(player.adminId || botConfig.adminId, "support_link");
+      const supportUrl = normalizeSupportLink(rawSupportLink || "");
+      const msgMain = await getLocalizedBotSectionMessage(botConfig.id, lang, "main");
+      const tplVars = buildTemplateVars({
+        player,
+        botConfig,
+        liveBalance: balanceValue,
+        supportUrl,
       });
+      const defaultMainTitle = `🎮 <b>${botConfig.botName || "TgGaming"}</b>`;
+      const defaultMainBody = `👤 ${getPlayerDisplayName(player)}\n💰 Balance: $${balance}`;
+      const mainTitle = renderTextTemplate(msgMain?.title?.trim() || defaultMainTitle, tplVars);
+      const mainBody = renderTextTemplate(msgMain?.body?.trim() || defaultMainBody, tplVars);
+      const text = `${mainTitle}\n\n${mainBody}\n`;
+
+      const keyboard: any[][] = [
+        [
+          { text: "💰 Deposit", callback_data: "deposit" },
+          { text: "💸 Withdraw", callback_data: "withdraw" },
+        ],
+        [
+          { text: "🎮 Games", callback_data: "games" },
+          { text: "🎁 Bonus", callback_data: "bonus" },
+        ],
+        [
+          { text: "📨 Share", callback_data: "share_invite" },
+          { text: "📞 Contact Us", callback_data: "contact_us" },
+        ],
+        [{ text: "⚙️ Settings", callback_data: "settings" }],
+      ];
+
+      const sig = `${text}\n${JSON.stringify(keyboard)}`;
+      const now = Date.now();
+      // For callback-triggered navigation (e.g. Back), always render immediately.
+      // Dedupe is kept only for non-callback entries like repeated /start deliveries.
+      if (!query) {
+        const last = recentMainMenuRenders.get(chatId);
+        if (last && last.sig === sig && now - last.at < MAIN_MENU_DEDUPE_WINDOW_MS) {
+          return;
+        }
+        recentMainMenuRenders.set(chatId, { sig, at: now });
+        if (recentMainMenuRenders.size > 5000) {
+          recentMainMenuRenders.forEach((rec, cid) => {
+            if (now - rec.at > 10 * 60 * 1000) recentMainMenuRenders.delete(cid);
+          });
+        }
+      }
+
+      const prevMainId = latestMainMenuMessageIds.get(chatId);
+      if (prevMainId) {
+        try {
+          await bot.deleteMessage(chatId, prevMainId);
+          untrackMessage(chatId, prevMainId);
+        } catch {}
+      }
+
+      if (query?.message?.message_id && query.message.message_id !== prevMainId) {
+        try {
+          await bot.deleteMessage(chatId, query.message.message_id);
+          untrackMessage(chatId, query.message.message_id);
+        } catch {}
+      }
+
+      const sent = await sendAndTrack(bot, chatId, text, {
+        reply_markup: { inline_keyboard: keyboard },
+      });
+      latestMainMenuMessageIds.set(chatId, sent.message_id);
+    });
+
+  mainMenuRenderQueue.set(chatId, currentTask);
+  try {
+    await currentTask;
+  } finally {
+    if (mainMenuRenderQueue.get(chatId) === currentTask) {
+      mainMenuRenderQueue.delete(chatId);
     }
   }
-
-  const prevMainId = latestMainMenuMessageIds.get(chatId);
-  if (prevMainId) {
-    try {
-      await bot.deleteMessage(chatId, prevMainId);
-      untrackMessage(chatId, prevMainId);
-    } catch {}
-  }
-
-  if (query?.message?.message_id && query.message.message_id !== prevMainId) {
-    try {
-      await bot.deleteMessage(chatId, query.message.message_id);
-      untrackMessage(chatId, query.message.message_id);
-    } catch {}
-  }
-
-  const sent = await sendAndTrack(bot, chatId, text, {
-    reply_markup: { inline_keyboard: keyboard },
-  });
-  latestMainMenuMessageIds.set(chatId, sent.message_id);
 }
 
 // ─── Pending state maps ───
