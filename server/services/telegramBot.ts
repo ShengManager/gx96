@@ -315,7 +315,8 @@ async function upsertCallbackView(
       // Fallback to sending a new message only when edit is impossible.
       if (
         msg.includes("message can't be edited") ||
-        msg.includes("message to edit not found")
+        msg.includes("message to edit not found") ||
+        msg.includes("there is no text in the message to edit")
       ) {
         // Continue to fallback below.
       } else {
