@@ -799,9 +799,11 @@ function registerHandlers(bot: TelegramBot, botConfig: any) {
       // Validate phone country restriction
       const allowedCountries = await getAllowedCountries(adminId);
       if (allowedCountries.length > 0) {
-        const isAllowed = allowedCountries.some((prefix: string) =>
-          phone.startsWith(prefix) || phone.startsWith("+" + prefix)
-        );
+        const normalizedPhone = String(phone || "").replace(/[^\d]/g, "");
+        const isAllowed = allowedCountries.some((prefix: string) => {
+          const normalizedPrefix = String(prefix || "").replace(/[^\d]/g, "");
+          return normalizedPrefix.length > 0 && normalizedPhone.startsWith(normalizedPrefix);
+        });
         if (!isAllowed) {
           await sendAndTrack(
             bot,
@@ -2014,28 +2016,27 @@ async function findPlayerByTelegramId(
 }
 
 async function getAllowedCountries(adminId: number): Promise<string[]> {
+  // New source of truth: country_configs (managed in Admin Settings -> Countries)
+  const countryRows = await db.getAllowedCountries(adminId);
+  const prefixesFromCountryConfig = countryRows
+    .map((row: any) => String(row.phonePrefix || "").trim())
+    .filter(Boolean);
+  if (prefixesFromCountryConfig.length > 0) return prefixesFromCountryConfig;
+
+  // Backward compatibility for legacy deployments that still use systemSettings
   const database = await getDb();
   if (!database) return [];
-
   const result = await database
     .select()
     .from(systemSettings)
-    .where(
-      and(
-        eq(systemSettings.adminId, adminId),
-        eq(systemSettings.settingKey, "allowed_phone_prefixes")
-      )
-    )
+    .where(and(eq(systemSettings.adminId, adminId), eq(systemSettings.settingKey, "allowed_phone_prefixes")))
     .limit(1);
-
-  if (result.length > 0 && result[0].settingValue) {
-    try {
-      return JSON.parse(result[0].settingValue);
-    } catch {
-      return result[0].settingValue.split(",").map((s: string) => s.trim());
-    }
+  if (result.length <= 0 || !result[0].settingValue) return [];
+  try {
+    return JSON.parse(result[0].settingValue);
+  } catch {
+    return result[0].settingValue.split(",").map((s: string) => s.trim()).filter(Boolean);
   }
-  return [];
 }
 
 async function registerPlayerFromTelegram(
